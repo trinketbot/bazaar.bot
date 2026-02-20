@@ -560,8 +560,84 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
-client.once(Events.ClientReady, () => {
+
+// ═════════════════════════════════════════════════════════════
+// SLASH COMMAND REGISTRATION — /setup_marketplace
+// ═════════════════════════════════════════════════════════════
+
+const { REST, Routes, SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+
+const MARKETPLACE_PANEL_CHANNEL_ID = '1467358343981961247';
+const ADMIN_ROLE_ID                = '1465161088814289089';
+const BOT_ROLE_ID                  = '1465163793934848194';
+
+async function registerCommands(clientId) {
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('setup_marketplace')
+      .setDescription('Post the marketplace listing panel (run once to replace old panel)')
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      .toJSON(),
+  ];
+  const rest = new REST({ version: '10' }).setToken(process.env.MARKETPLACE_TOKEN);
+  try {
+    await rest.put(Routes.applicationCommands(clientId), { body: commands });
+    console.log('Slash commands registered.');
+  } catch (e) {
+    console.error('Failed to register slash commands:', e.message);
+  }
+}
+
+// ── /setup_marketplace command handler ───────────────────────
+client.on(Events.InteractionCreate, async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName !== 'setup_marketplace') return;
+
+  const member     = interaction.member;
+  const hasAdmin   = member.roles.cache.has(ADMIN_ROLE_ID);
+  const hasBotRole = member.roles.cache.has(BOT_ROLE_ID);
+  const isAdmin    = member.permissions.has(PermissionFlagsBits.Administrator);
+
+  if (!hasAdmin && !hasBotRole && !isAdmin) {
+    await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
+    return;
+  }
+
+  const channel = interaction.guild.channels.cache.get(MARKETPLACE_PANEL_CHANNEL_ID);
+  if (!channel) {
+    await interaction.reply({ content: '❌ Marketplace panel channel not found!', ephemeral: true });
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('Marketplace Listings')
+    .setDescription(
+      'Ready to sell? Click **Create Listing** to build your shop post!\n\n' +
+      '**Requirements:**\n' +
+      '- Photos must include a handwritten note with your username, server name, and the date\n' +
+      '- At least 1 photo required — upload directly to your listing thread after it\'s created\n' +
+      '- Listings can only be created once every **14 days**\n\n' +
+      'Creating a new listing will automatically close your previous one.'
+    )
+    .setColor(DEFAULT_COLOR);
+
+  const button = new ButtonBuilder()
+    .setCustomId('create_marketplace_listing')
+    .setLabel('Create Listing')
+    .setStyle(ButtonStyle.Secondary);
+
+  await channel.send({
+    embeds: [embed],
+    components: [new ActionRowBuilder().addComponents(button)],
+  });
+
+  await interaction.reply({ content: `✅ Marketplace panel posted in ${channel.toString()}!`, ephemeral: true });
+});
+
+// ── Ready ─────────────────────────────────────────────────────
+client.once(Events.ClientReady, async () => {
   console.log(`Marketplace bot ready — logged in as ${client.user.tag}`);
+  await registerCommands(client.user.id);
 });
 
 client.login(process.env.MARKETPLACE_TOKEN);
