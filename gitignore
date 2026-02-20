@@ -1,0 +1,5 @@
+node_modules/
+cooldowns.json
+threads.json
+*.bak
+.env
