@@ -245,12 +245,17 @@ function getFields(components) {
 function textVal(fields, id) { return fields[id]?.value?.trim() || ''; }
 function selectVals(fields, id) { return fields[id]?.values || []; }
 function uploadedFiles(fields, id) { return fields[id]?.files || []; }
+function deferReply(interactionId, interactionToken) {
+  return respond(interactionId, interactionToken, 5);
+}
 
 // ── Guild cache (for forum tags) ──────────────────────────────
 const guildCache = {};
 
 // ── Post listing ──────────────────────────────────────────────
 async function postListing(interactionId, token, state) {
+  await deferReply(interactionId, token);
+
   const { userId, username, avatarUrl } = state;
 
   // Archive old thread
@@ -313,10 +318,22 @@ async function postListing(interactionId, token, state) {
     saveJSON('cooldowns.json', cooldowns);
     userState.delete(userId);
 
-    await replyEphemeral(interactionId, token, `✅ Your listing has been created: <#${threadId}>`);
+    await rest(
+      'POST',
+      `/webhooks/${appId}/${token}`,
+      { content: `✅ Your listing has been created: <#${threadId}>`, flags: 64 }
+    );
   } catch (e) {
     console.error('postListing error:', e);
-    await replyEphemeral(interactionId, token, `❌ Failed to create listing: ${e.message}`);
+    await deferReply(id, token);
+
+    await rest('POST', `/channels/${PANEL_CHANNEL_ID}/messages`, {...});
+    
+    return rest(
+      'POST',
+      `/webhooks/${appId}/${token}`,
+      { content: `✅ Panel posted in <#${PANEL_CHANNEL_ID}>!`, flags: 64 }
+);
   }
 }
 
