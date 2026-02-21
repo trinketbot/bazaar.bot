@@ -39,7 +39,7 @@ jobs:
 
       - name: Copy bot files into monorepo workspace
         run: |
-          cp bot/index.js /tmp/discordjs/index.js
+          cp bot/index.cjs /tmp/discordjs/index.cjs
           cp bot/cooldowns.json /tmp/discordjs/cooldowns.json 2>/dev/null || echo '{}' > /tmp/discordjs/cooldowns.json
           cp bot/threads.json /tmp/discordjs/threads.json 2>/dev/null || echo '{}' > /tmp/discordjs/threads.json
 
@@ -47,4 +47,4 @@ jobs:
         working-directory: /tmp/discordjs
         env:
           MARKETPLACE_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
-        run: node index.js
+        run: node index.cjs
