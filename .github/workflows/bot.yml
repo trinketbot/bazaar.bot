@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout bot code
         uses: actions/checkout@v4
+        with:
+          path: bot
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v4
@@ -35,13 +37,14 @@ jobs:
         working-directory: /tmp/discordjs
         run: pnpm turbo run build --filter=discord.js
 
-      - name: Link discord.js into bot node_modules
+      - name: Copy bot files into monorepo workspace
         run: |
-          mkdir -p node_modules
-          rm -rf node_modules/discord.js
-          ln -s /tmp/discordjs/packages/discord.js node_modules/discord.js
+          cp bot/index.js /tmp/discordjs/index.js
+          cp bot/cooldowns.json /tmp/discordjs/cooldowns.json 2>/dev/null || echo '{}' > /tmp/discordjs/cooldowns.json
+          cp bot/threads.json /tmp/discordjs/threads.json 2>/dev/null || echo '{}' > /tmp/discordjs/threads.json
 
       - name: Run marketplace bot
+        working-directory: /tmp/discordjs
         env:
           MARKETPLACE_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
         run: node index.js
