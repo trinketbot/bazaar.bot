@@ -332,7 +332,7 @@ async function handleInteraction(d) {
 
   try {
     // ── Slash commands ──────────────────────────────────────
-    if (type === 2 && data.name === 'setup_marketplace') {
+    if (type === 2 && data.name === 'setup_market') {
       const roles  = member?.roles || [];
       const perms  = BigInt(member?.permissions || '0');
       const isAdmin = roles.includes(ADMIN_ROLE_ID) || roles.includes(BOT_ROLE_ID) || (perms & 8n) === 8n;
@@ -461,7 +461,7 @@ async function handleInteraction(d) {
 async function registerCommands(appId) {
   try {
     await rest('PUT', `/applications/${appId}/commands`, [{
-      name: 'setup_marketplace',
+      name: 'setup_market',
       description: 'Post the marketplace listing panel',
       default_member_permissions: '32', // ManageGuild
     }]);
