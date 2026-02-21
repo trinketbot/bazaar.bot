@@ -533,7 +533,8 @@ function connect(url = GATEWAY) {
         }
       }
 
-      if (t === 'INTERACTION_CREATE') {
+      if (t === "INTERACTION_CREATE") {
+        console.log("INTERACTION received:", JSON.stringify({ type: d.type, custom_id: d.data?.custom_id ?? d.data?.name }));
         await handleInteraction(d);
       }
     }
