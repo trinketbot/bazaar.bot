@@ -1,12 +1,7 @@
 {
   "name": "marketplace-bot",
   "version": "1.0.0",
-  "description": "TrinketBot marketplace listing module (Node.js)",
+  "description": "TrinketBot marketplace listing module",
   "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
-  "dependencies": {
-    "discord.js": "discordjs/discord.js"
-  }
+  "dependencies": {}
 }
