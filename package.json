@@ -1,7 +1,8 @@
 {
   "name": "marketplace-bot",
   "version": "1.0.0",
-  "description": "TrinketBot marketplace listing module",
   "main": "index.js",
-  "dependencies": {}
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
 }
