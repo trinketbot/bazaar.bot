@@ -13,38 +13,18 @@ jobs:
     timeout-minutes: 300
 
     steps:
-      - name: Checkout bot code
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          path: bot
 
-      - name: Set up Node.js 22
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '20'
 
-      - name: Install pnpm
-        run: npm install -g pnpm@9
-
-      - name: Clone discord.js main branch
-        run: git clone --depth=1 https://github.com/discordjs/discord.js.git /tmp/discordjs
-
-      - name: Install monorepo dependencies
-        working-directory: /tmp/discordjs
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Build discord.js from source
-        working-directory: /tmp/discordjs
-        run: pnpm turbo run build --filter=discord.js
-
-      - name: Copy bot files into monorepo workspace
-        run: |
-          cp bot/index.cjs /tmp/discordjs/index.cjs
-          cp bot/cooldowns.json /tmp/discordjs/cooldowns.json 2>/dev/null || echo '{}' > /tmp/discordjs/cooldowns.json
-          cp bot/threads.json /tmp/discordjs/threads.json 2>/dev/null || echo '{}' > /tmp/discordjs/threads.json
+      - name: Install dependencies
+        run: npm install
 
       - name: Run marketplace bot
-        working-directory: /tmp/discordjs
         env:
           MARKETPLACE_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
-        run: node index.cjs
+        run: node index.js
