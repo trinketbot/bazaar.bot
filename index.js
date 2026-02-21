@@ -1,24 +1,37 @@
 // ============================================================
-// TrinketBot — Marketplace Module (Node.js, discord.js v14 stable)
-// ============================================================
-// Uses only stable discord.js v14 APIs — no LabelBuilder or
-// FileUploadBuilder (those are unreleased). Photos are collected
-// as direct uploads into the created thread after posting.
+// TrinketBot — Marketplace Module (Node.js)
+// Uses discord.js dev build (discordjs/discord.js on GitHub)
+// for modal select menus and file upload support.
+//
+// FLOW:
+//   Button click → Step 1 modal (item count + general info)
+//                → Step 2 modal (payment select + shipping select)
+//                → Per-item modals × N (name, price, notes,
+//                    packaging select, condition select)
+//                → Tag modal (tag select)
+//                → Photo modal (file upload + confirmation)
+//                → Forum thread created
 // ============================================================
 
 const {
   Client,
   GatewayIntentBits,
   ModalBuilder,
+  LabelBuilder,
   TextInputBuilder,
   TextInputStyle,
-  ActionRowBuilder,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  FileUploadBuilder,
+  ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
   Events,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  PermissionFlagsBits,
 } = require('discord.js');
 
 const fs = require('fs');
@@ -42,7 +55,10 @@ let threads   = loadJSON(THREADS_FILE);
 const userState = new Map();
 
 // ── Config ────────────────────────────────────────────────────
-const MARKETPLACE_FORUM_ID = '1466105963621777572';
+const MARKETPLACE_FORUM_ID         = '1466105963621777572';
+const MARKETPLACE_PANEL_CHANNEL_ID = '1467358343981961247';
+const ADMIN_ROLE_ID                = '1465161088814289089';
+const BOT_ROLE_ID                  = '1465163793934848194';
 const MARKETPLACE_TAG_IDS = [
   '1466283217496707072', '1466283356701331642', '1466283393732837602',
   '1466283407695806808', '1466283426075115583', '1466283469452873730',
@@ -53,16 +69,15 @@ const MARKETPLACE_TAG_IDS = [
 ];
 const DEFAULT_COLOR  = 0xe0ad76;
 const COOLDOWN_DAYS  = 14;
-const PHOTO_WAIT_MIN = 10; // minutes user has to upload photos to thread
 
-// ── Select option sets ────────────────────────────────────────
+// ── Option sets ───────────────────────────────────────────────
 const PAYMENT_OPTIONS = [
   { label: 'PayPal G&S', value: 'PayPal G&S' },
   { label: 'Venmo G&S',  value: 'Venmo G&S'  },
   { label: 'Other',      value: 'Other'       },
 ];
 const SHIPPING_OPTIONS = [
-  { label: 'Included in price',      value: 'included'   },
+  { label: 'Included in price',       value: 'included'   },
   { label: 'Additional (buyer pays)', value: 'additional' },
 ];
 const PACKAGING_OPTIONS = [
@@ -82,127 +97,164 @@ const CONDITION_OPTIONS = [
 ];
 
 // ── Helpers ───────────────────────────────────────────────────
-function makeOptions(arr) {
+function makeSelectOptions(arr) {
   return arr.map(o =>
     new StringSelectMenuOptionBuilder().setLabel(o.label).setValue(o.value)
   );
 }
 
-function textRow(customId, label, placeholder, style = TextInputStyle.Short, required = true, maxLength = 200) {
-  return new ActionRowBuilder().addComponents(
-    new TextInputBuilder()
-      .setCustomId(customId)
-      .setLabel(label)
-      .setStyle(style)
-      .setPlaceholder(placeholder)
-      .setMaxLength(maxLength)
-      .setRequired(required)
-  );
+/**
+ * Wrap a component in a LabelBuilder with label + description.
+ * Used for all modal components (text inputs, selects, file uploads).
+ */
+function labeled(labelText, description, component) {
+  const lb = new LabelBuilder()
+    .setLabel(labelText)
+    .setDescription(description);
+
+  if (component instanceof TextInputBuilder) {
+    lb.setTextInputComponent(component);
+  } else if (component instanceof StringSelectMenuBuilder) {
+    lb.setStringSelectMenuComponent(component);
+  } else if (component instanceof FileUploadBuilder) {
+    lb.setFileUploadComponent(component);
+  }
+
+  return lb;
 }
 
 // ═════════════════════════════════════════════════════════════
 // MODAL BUILDERS
 // ═════════════════════════════════════════════════════════════
 
+/** Step 1 — item count + general info */
 function buildStep1Modal() {
   return new ModalBuilder()
     .setCustomId('mp_step1')
-    .setTitle('Create Listing — Step 1')
-    .addComponents(
-      textRow('item_count', 'How many items? (1–10)', 'Enter a number from 1 to 10', TextInputStyle.Short, true, 2),
-      textRow('general_info', 'Additional general info (optional)', 'e.g. Bundle deals available, ships from NY…', TextInputStyle.Paragraph, false, 500)
+    .setTitle('Create Listing — Step 1 of 3')
+    .addLabelComponents(
+      labeled(
+        'How many items are you selling? (1–10)',
+        'Enter a whole number from 1 to 10',
+        new TextInputBuilder()
+          .setCustomId('item_count')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('e.g. 3')
+          .setMinLength(1)
+          .setMaxLength(2)
+          .setRequired(true)
+      ),
+      labeled(
+        'Additional general info (optional)',
+        'Shipping notes, bundle deals, location, etc.',
+        new TextInputBuilder()
+          .setCustomId('general_info')
+          .setStyle(TextInputStyle.Paragraph)
+          .setPlaceholder('e.g. Bundle deals available, ships from NY…')
+          .setMaxLength(500)
+          .setRequired(false)
+      )
     );
 }
 
+/** Step 2 — payment methods + shipping (selects inside modal) */
+function buildStep2Modal() {
+  return new ModalBuilder()
+    .setCustomId('mp_step2')
+    .setTitle('Create Listing — Step 2 of 3')
+    .addLabelComponents(
+      labeled(
+        'Accepted payment methods',
+        'Select all that apply (up to 3)',
+        new StringSelectMenuBuilder()
+          .setCustomId('payment')
+          .setPlaceholder('Choose payment methods…')
+          .setMinValues(1)
+          .setMaxValues(3)
+          .setRequired(true)
+          .addOptions(makeSelectOptions(PAYMENT_OPTIONS))
+      ),
+      labeled(
+        'Shipping',
+        'Is shipping included in your prices or charged separately?',
+        new StringSelectMenuBuilder()
+          .setCustomId('shipping')
+          .setPlaceholder('Select shipping policy…')
+          .setMinValues(1)
+          .setMaxValues(1)
+          .setRequired(true)
+          .addOptions(makeSelectOptions(SHIPPING_OPTIONS))
+      )
+    );
+}
+
+/**
+ * Per-item modal — name, price, notes + packaging + condition.
+ * All five fields in one modal.
+ */
 function buildItemModal(index, total) {
+  const num = index + 1;
   return new ModalBuilder()
     .setCustomId(`mp_item_${index}`)
-    .setTitle(`Item ${index + 1} of ${total} — Details`)
-    .addComponents(
-      textRow('item_name',  'Item name',           'e.g. Jellycat Bashful Bunny Medium', TextInputStyle.Short,     true,  200),
-      textRow('item_price', 'Price (USD)',          'e.g. 35.00',                         TextInputStyle.Short,     true,  20),
-      textRow('item_notes', 'Notes (optional)',     'Any extra details about this item',  TextInputStyle.Paragraph, false, 500)
+    .setTitle(`Item ${num} of ${total}`)
+    .addLabelComponents(
+      labeled(
+        'Item name',
+        'The full name of the item you are selling',
+        new TextInputBuilder()
+          .setCustomId('item_name')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('e.g. Jellycat Bashful Bunny Medium')
+          .setMaxLength(200)
+          .setRequired(true)
+      ),
+      labeled(
+        'Price (USD)',
+        'Numeric price — do not include the $ symbol',
+        new TextInputBuilder()
+          .setCustomId('item_price')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('e.g. 35.00')
+          .setMaxLength(20)
+          .setRequired(true)
+      ),
+      labeled(
+        'Additional notes (optional)',
+        'Any extra details — required if condition is "Other (see notes)"',
+        new TextInputBuilder()
+          .setCustomId('item_notes')
+          .setStyle(TextInputStyle.Paragraph)
+          .setPlaceholder('e.g. Minor scuff on ear, barely noticeable')
+          .setMaxLength(500)
+          .setRequired(false)
+      ),
+      labeled(
+        'Packaging condition',
+        'How is the item currently packaged?',
+        new StringSelectMenuBuilder()
+          .setCustomId('packaging')
+          .setPlaceholder('Select packaging condition…')
+          .setMinValues(1)
+          .setMaxValues(1)
+          .setRequired(true)
+          .addOptions(makeSelectOptions(PACKAGING_OPTIONS))
+      ),
+      labeled(
+        'Item condition',
+        'What condition is the item itself in?',
+        new StringSelectMenuBuilder()
+          .setCustomId('condition')
+          .setPlaceholder('Select item condition…')
+          .setMinValues(1)
+          .setMaxValues(1)
+          .setRequired(true)
+          .addOptions(makeSelectOptions(CONDITION_OPTIONS))
+      )
     );
 }
 
-function buildPhotoModal() {
-  return new ModalBuilder()
-    .setCustomId('mp_photos')
-    .setTitle('Create Listing — Final Step')
-    .addComponents(
-      textRow('confirm', 'Type YES to confirm photos show handwritten note',
-        'Every photo must show: username, server name, today\'s date',
-        TextInputStyle.Short, true, 3)
-    );
-}
-
-// ═════════════════════════════════════════════════════════════
-// VIEW BUILDERS  (ephemeral messages with select menus / buttons)
-// ═════════════════════════════════════════════════════════════
-
-function buildPaymentShippingView(state) {
-  const paymentMenu = new StringSelectMenuBuilder()
-    .setCustomId('mp_payment')
-    .setPlaceholder('Payment methods accepted (select 1–3)')
-    .setMinValues(1)
-    .setMaxValues(3)
-    .addOptions(makeOptions(PAYMENT_OPTIONS));
-
-  const shippingMenu = new StringSelectMenuBuilder()
-    .setCustomId('mp_shipping')
-    .setPlaceholder('Is shipping included or additional?')
-    .setMinValues(1)
-    .setMaxValues(1)
-    .addOptions(makeOptions(SHIPPING_OPTIONS));
-
-  const continueBtn = new ButtonBuilder()
-    .setCustomId('mp_payment_continue')
-    .setLabel('Continue')
-    .setStyle(ButtonStyle.Primary);
-
-  return {
-    content: '**Step 2: Payment & Shipping**\nSelect your options then click **Continue**.',
-    components: [
-      new ActionRowBuilder().addComponents(paymentMenu),
-      new ActionRowBuilder().addComponents(shippingMenu),
-      new ActionRowBuilder().addComponents(continueBtn),
-    ],
-    ephemeral: true,
-  };
-}
-
-function buildItemConditionView(index, total) {
-  const packagingMenu = new StringSelectMenuBuilder()
-    .setCustomId(`mp_pkg_${index}`)
-    .setPlaceholder(`Item ${index + 1}: Packaging condition`)
-    .setMinValues(1)
-    .setMaxValues(1)
-    .addOptions(makeOptions(PACKAGING_OPTIONS));
-
-  const conditionMenu = new StringSelectMenuBuilder()
-    .setCustomId(`mp_cond_${index}`)
-    .setPlaceholder(`Item ${index + 1}: Item condition`)
-    .setMinValues(1)
-    .setMaxValues(1)
-    .addOptions(makeOptions(CONDITION_OPTIONS));
-
-  const continueBtn = new ButtonBuilder()
-    .setCustomId(`mp_item_cond_continue_${index}`)
-    .setLabel('Continue')
-    .setStyle(ButtonStyle.Primary);
-
-  return {
-    content: `**Item ${index + 1} of ${total}: Conditions**\nSelect both conditions then click **Continue**.`,
-    components: [
-      new ActionRowBuilder().addComponents(packagingMenu),
-      new ActionRowBuilder().addComponents(conditionMenu),
-      new ActionRowBuilder().addComponents(continueBtn),
-    ],
-    ephemeral: true,
-  };
-}
-
-async function buildTagView(guild) {
+/** Tag selection modal */
+async function buildTagModal(guild) {
   const forum  = guild.channels.cache.get(MARKETPLACE_FORUM_ID);
   const tagMap = {};
   if (forum && forum.availableTags) {
@@ -217,28 +269,54 @@ async function buildTagView(guild) {
         .setValue(id)
     );
 
+  // Fallback if no tags resolved
   if (!options.length) return null;
 
-  const tagMenu = new StringSelectMenuBuilder()
+  return new ModalBuilder()
     .setCustomId('mp_tags')
-    .setPlaceholder('Select listing tags (at least 1)')
-    .setMinValues(1)
-    .setMaxValues(Math.min(options.length, 25))
-    .addOptions(options);
+    .setTitle('Create Listing — Tags')
+    .addLabelComponents(
+      labeled(
+        'Listing tags',
+        'Select all tags that apply to your listing',
+        new StringSelectMenuBuilder()
+          .setCustomId('tags')
+          .setPlaceholder('Select listing tags…')
+          .setMinValues(1)
+          .setMaxValues(Math.min(options.length, 25))
+          .setRequired(true)
+          .addOptions(options)
+      )
+    );
+}
 
-  const continueBtn = new ButtonBuilder()
-    .setCustomId('mp_tags_continue')
-    .setLabel('Continue — Add Photos')
-    .setStyle(ButtonStyle.Primary);
-
-  return {
-    content: '**Select Tags**\nChoose the tags that best describe your items, then click **Continue**.',
-    components: [
-      new ActionRowBuilder().addComponents(tagMenu),
-      new ActionRowBuilder().addComponents(continueBtn),
-    ],
-    ephemeral: true,
-  };
+/** Final modal — photo upload + handwritten note confirmation */
+function buildPhotoModal() {
+  return new ModalBuilder()
+    .setCustomId('mp_photos')
+    .setTitle('Create Listing — Photos')
+    .addLabelComponents(
+      labeled(
+        'Photos (1–10 files)',
+        'Each photo must show a handwritten note: your username, server name, and today\'s date',
+        new FileUploadBuilder()
+          .setCustomId('photos')
+          .setMinValues(1)
+          .setMaxValues(10)
+          .setRequired(true)
+      ),
+      labeled(
+        'Confirm handwritten note',
+        'Type YES to confirm every photo includes the required handwritten note',
+        new TextInputBuilder()
+          .setCustomId('confirm')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('YES')
+          .setMinLength(3)
+          .setMaxLength(3)
+          .setRequired(true)
+      )
+    );
 }
 
 // ═════════════════════════════════════════════════════════════
@@ -255,7 +333,7 @@ async function postListing(interaction, state) {
     return;
   }
 
-  // Close previous thread if one exists
+  // Close previous thread
   const prevId = threads[userId];
   if (prevId) {
     try {
@@ -271,16 +349,20 @@ async function postListing(interaction, state) {
   if (forum.availableTags) {
     for (const t of forum.availableTags) tagObjMap[t.id] = t;
   }
-  const appliedTags = (state.tags || []).map(id => tagObjMap[id]).filter(Boolean).slice(0, 5);
+  const appliedTags = (state.tags || [])
+    .map(id => tagObjMap[id])
+    .filter(Boolean)
+    .slice(0, 5);
 
   if (!appliedTags.length) {
     await interaction.reply({ content: '❌ None of the selected tags were found. Please contact an admin.', ephemeral: true });
     return;
   }
 
-  const shippingText = state.shipping === 'included' ? 'Included in price' : 'Additional (buyer pays)';
+  const shippingText = state.shipping === 'included'
+    ? 'Included in price'
+    : 'Additional (buyer pays)';
 
-  // Build embed
   const embed = new EmbedBuilder()
     .setTitle(`${user.displayName}'s Shop`)
     .setColor(DEFAULT_COLOR)
@@ -305,16 +387,17 @@ async function postListing(interaction, state) {
     embed.addFields({ name: 'General Info', value: state.generalInfo, inline: false });
   }
 
-  embed.addFields({
-    name: '📸 Photos',
-    value: `Photos will be posted below by the seller. You have **${PHOTO_WAIT_MIN} minutes** to upload them directly to this thread.`,
-    inline: false,
-  });
+  // Photos — CDN URLs from the file upload interaction
+  if (state.photoUrls && state.photoUrls.length) {
+    const links = state.photoUrls.map((url, i) => `[Photo ${i + 1}](${url})`).join('\n');
+    embed.addFields({ name: 'Photos', value: links, inline: false });
+    embed.setImage(state.photoUrls[0]);
+  }
 
   embed.setFooter({ text: `Seller ID: ${userId}` });
 
   try {
-    const result = await forum.threads.create({
+    const thread = await forum.threads.create({
       name: `${user.displayName}'s Shop`,
       message: {
         content: `**${user.toString()}'s Shop Listing**`,
@@ -323,9 +406,6 @@ async function postListing(interaction, state) {
       appliedTags: appliedTags.map(t => t.id),
     });
 
-    const thread = result;
-
-    // Save state
     threads[userId]   = thread.id;
     cooldowns[userId] = new Date().toISOString();
     saveJSON(THREADS_FILE,   threads);
@@ -333,16 +413,8 @@ async function postListing(interaction, state) {
 
     userState.delete(userId);
 
-    // Prompt user to upload photos in the thread
-    await thread.send(
-      `${user.toString()} — your listing has been created! ` +
-      `**Please upload your photos directly here** within ${PHOTO_WAIT_MIN} minutes.\n` +
-      `Each photo must include a handwritten note with your **username**, **server name**, and **today's date**.\n` +
-      `-# If no photos are uploaded, this thread may be removed by a moderator.`
-    );
-
     await interaction.reply({
-      content: `✅ Your listing has been created: ${thread.toString()}\nPlease upload your photos there now.`,
+      content: `✅ Your listing has been created: ${thread.toString()}`,
       ephemeral: true,
     });
 
@@ -353,7 +425,7 @@ async function postListing(interaction, state) {
 }
 
 // ═════════════════════════════════════════════════════════════
-// CLIENT
+// CLIENT + INTERACTION ROUTER
 // ═════════════════════════════════════════════════════════════
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -362,7 +434,51 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
     const userId = interaction.user.id;
 
-    // ── "Create Listing" button (from Python bot's panel) ─────
+    // ── /setup_marketplace slash command ──────────────────────
+    if (interaction.isChatInputCommand() && interaction.commandName === 'setup_marketplace') {
+      const member     = interaction.member;
+      const hasAdmin   = member.roles.cache.has(ADMIN_ROLE_ID);
+      const hasBotRole = member.roles.cache.has(BOT_ROLE_ID);
+      const isAdmin    = member.permissions.has(PermissionFlagsBits.Administrator);
+
+      if (!hasAdmin && !hasBotRole && !isAdmin) {
+        await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
+        return;
+      }
+
+      const channel = interaction.guild.channels.cache.get(MARKETPLACE_PANEL_CHANNEL_ID);
+      if (!channel) {
+        await interaction.reply({ content: '❌ Marketplace panel channel not found!', ephemeral: true });
+        return;
+      }
+
+      const panelEmbed = new EmbedBuilder()
+        .setTitle('Marketplace Listings')
+        .setDescription(
+          'Ready to sell? Click **Create Listing** to build your shop post!\n\n' +
+          '**Requirements:**\n' +
+          '- Photos must include a handwritten note with your username, server name, and the date\n' +
+          '- 1–10 photos required\n' +
+          '- Listings can only be created once every **14 days**\n\n' +
+          'Creating a new listing will automatically close your previous one.'
+        )
+        .setColor(DEFAULT_COLOR);
+
+      const panelBtn = new ButtonBuilder()
+        .setCustomId('create_marketplace_listing')
+        .setLabel('Create Listing')
+        .setStyle(ButtonStyle.Secondary);
+
+      await channel.send({
+        embeds: [panelEmbed],
+        components: [new ActionRowBuilder().addComponents(panelBtn)],
+      });
+
+      await interaction.reply({ content: `✅ Marketplace panel posted in ${channel.toString()}!`, ephemeral: true });
+      return;
+    }
+
+    // ── "Create Listing" button ───────────────────────────────
     if (interaction.isButton() && interaction.customId === 'create_marketplace_listing') {
       if (cooldowns[userId]) {
         const last     = new Date(cooldowns[userId]);
@@ -383,99 +499,7 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    // ── Payment/shipping select menus ─────────────────────────
-    if (interaction.isStringSelectMenu() && interaction.customId === 'mp_payment') {
-      const state = userState.get(userId);
-      if (!state) { await interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true }); return; }
-      state.payment = interaction.values;
-      await interaction.reply({ content: `✅ Payment: **${state.payment.join(', ')}**`, ephemeral: true });
-      return;
-    }
-
-    if (interaction.isStringSelectMenu() && interaction.customId === 'mp_shipping') {
-      const state = userState.get(userId);
-      if (!state) { await interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true }); return; }
-      state.shipping = interaction.values[0];
-      await interaction.reply({ content: `✅ Shipping: **${interaction.values[0] === 'included' ? 'Included in price' : 'Additional (buyer pays)'}**`, ephemeral: true });
-      return;
-    }
-
-    // ── Payment/shipping Continue button ──────────────────────
-    if (interaction.isButton() && interaction.customId === 'mp_payment_continue') {
-      const state = userState.get(userId);
-      if (!state) { await interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true }); return; }
-      if (!state.payment || !state.payment.length) {
-        await interaction.reply({ content: '❌ Please select a payment method first.', ephemeral: true }); return;
-      }
-      if (!state.shipping) {
-        await interaction.reply({ content: '❌ Please select a shipping option first.', ephemeral: true }); return;
-      }
-      // Start item loop
-      await interaction.reply(buildItemConditionView(0, state.itemCount));
-      return;
-    }
-
-    // ── Per-item packaging/condition select menus ─────────────
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('mp_pkg_')) {
-      const index = parseInt(interaction.customId.split('_')[2], 10);
-      const state = userState.get(userId);
-      if (!state) { await interaction.reply({ content: '❌ Session expired.', ephemeral: true }); return; }
-      state[`pkg_${index}`] = interaction.values[0];
-      await interaction.reply({ content: `✅ Packaging: **${interaction.values[0]}**`, ephemeral: true });
-      return;
-    }
-
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('mp_cond_')) {
-      const index = parseInt(interaction.customId.split('_')[2], 10);
-      const state = userState.get(userId);
-      if (!state) { await interaction.reply({ content: '❌ Session expired.', ephemeral: true }); return; }
-      state[`cond_${index}`] = interaction.values[0];
-      await interaction.reply({ content: `✅ Condition: **${interaction.values[0]}**`, ephemeral: true });
-      return;
-    }
-
-    // ── Per-item condition Continue button ────────────────────
-    if (interaction.isButton() && interaction.customId.startsWith('mp_item_cond_continue_')) {
-      const index = parseInt(interaction.customId.split('_').pop(), 10);
-      const state = userState.get(userId);
-      if (!state) { await interaction.reply({ content: '❌ Session expired.', ephemeral: true }); return; }
-      if (!state[`pkg_${index}`]) {
-        await interaction.reply({ content: '❌ Please select a packaging condition first.', ephemeral: true }); return;
-      }
-      if (!state[`cond_${index}`]) {
-        await interaction.reply({ content: '❌ Please select an item condition first.', ephemeral: true }); return;
-      }
-      await interaction.showModal(buildItemModal(index, state.itemCount));
-      return;
-    }
-
-    // ── Tag select menu ───────────────────────────────────────
-    if (interaction.isStringSelectMenu() && interaction.customId === 'mp_tags') {
-      const state = userState.get(userId);
-      if (!state) { await interaction.reply({ content: '❌ Session expired.', ephemeral: true }); return; }
-      state.tags = interaction.values;
-
-      const forum  = interaction.guild.channels.cache.get(MARKETPLACE_FORUM_ID);
-      const tagMap = {};
-      if (forum && forum.availableTags) for (const t of forum.availableTags) tagMap[t.id] = t.name;
-      const names = state.tags.map(id => tagMap[id] || id).join(', ');
-      await interaction.reply({ content: `✅ Tags selected: **${names}**`, ephemeral: true });
-      return;
-    }
-
-    // ── Tag Continue button ───────────────────────────────────
-    if (interaction.isButton() && interaction.customId === 'mp_tags_continue') {
-      const state = userState.get(userId);
-      if (!state) { await interaction.reply({ content: '❌ Session expired.', ephemeral: true }); return; }
-      if (!state.tags || !state.tags.length) {
-        await interaction.reply({ content: '❌ Please select at least one tag first.', ephemeral: true }); return;
-      }
-      await interaction.showModal(buildPhotoModal());
-      return;
-    }
-
     // ── Modal submissions ─────────────────────────────────────
-
     if (!interaction.isModalSubmit()) return;
 
     const state = userState.get(userId);
@@ -484,51 +508,61 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.customId === 'mp_step1') {
       const count = parseInt(interaction.fields.getTextInputValue('item_count').trim(), 10);
       if (isNaN(count) || count < 1 || count > 10) {
-        await interaction.reply({ content: '❌ Please enter a whole number between 1 and 10.', ephemeral: true }); return;
+        await interaction.reply({ content: '❌ Please enter a whole number between 1 and 10.', ephemeral: true });
+        return;
       }
-      const newState = {
+      userState.set(userId, {
         userId,
-        user: interaction.user,
+        user:        interaction.user,
         itemCount:   count,
         generalInfo: interaction.fields.getTextInputValue('general_info').trim(),
-        items:  [],
-        tags:   [],
-        payment:  null,
-        shipping: null,
-      };
-      userState.set(userId, newState);
-      await interaction.reply(buildPaymentShippingView(newState));
+        items:       [],
+        tags:        [],
+        payment:     null,
+        shipping:    null,
+      });
+      await interaction.showModal(buildStep2Modal());
       return;
     }
 
-    // Per-item detail modals
+    // Step 2 — payment + shipping
+    if (interaction.customId === 'mp_step2') {
+      if (!state) { await interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true }); return; }
+      state.payment  = interaction.fields.getStringSelectValues('payment');
+      state.shipping = interaction.fields.getStringSelectValues('shipping')[0];
+      await interaction.showModal(buildItemModal(0, state.itemCount));
+      return;
+    }
+
+    // Per-item modals
     if (interaction.customId.startsWith('mp_item_')) {
       if (!state) { await interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true }); return; }
       const index = parseInt(interaction.customId.split('_')[2], 10);
 
       const rawPrice = interaction.fields.getTextInputValue('item_price').replace('$', '').replace(',', '').trim();
-      const price = parseFloat(rawPrice);
+      const price    = parseFloat(rawPrice);
       if (isNaN(price) || price <= 0) {
-        await interaction.reply({ content: '❌ Price must be a positive number (e.g. 25.00).', ephemeral: true }); return;
+        await interaction.reply({ content: '❌ Price must be a positive number (e.g. 25.00).', ephemeral: true });
+        return;
       }
 
       state.items.push({
         name:      interaction.fields.getTextInputValue('item_name').trim(),
         price:     price.toFixed(2),
         notes:     interaction.fields.getTextInputValue('item_notes').trim(),
-        packaging: state[`pkg_${index}`],
-        condition: state[`cond_${index}`],
+        packaging: interaction.fields.getStringSelectValues('packaging')[0],
+        condition: interaction.fields.getStringSelectValues('condition')[0],
       });
 
       const next = index + 1;
       if (next < state.itemCount) {
-        await interaction.reply(buildItemConditionView(next, state.itemCount));
+        await interaction.showModal(buildItemModal(next, state.itemCount));
       } else {
-        const tagView = await buildTagView(interaction.guild);
-        if (tagView) {
-          await interaction.reply(tagView);
+        const tagModal = await buildTagModal(interaction.guild);
+        if (tagModal) {
+          await interaction.showModal(tagModal);
         } else {
-          // No tags available — skip straight to photo confirmation
+          // No tags available — skip to photos
           state.tags = [];
           await interaction.showModal(buildPhotoModal());
         }
@@ -536,9 +570,18 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    // Final photo confirmation modal
+    // Tag selection modal
+    if (interaction.customId === 'mp_tags') {
+      if (!state) { await interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true }); return; }
+      state.tags = interaction.fields.getStringSelectValues('tags');
+      await interaction.showModal(buildPhotoModal());
+      return;
+    }
+
+    // Final — photo upload + confirmation
     if (interaction.customId === 'mp_photos') {
       if (!state) { await interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true }); return; }
+
       const confirm = interaction.fields.getTextInputValue('confirm').trim().toUpperCase();
       if (confirm !== 'YES') {
         await interaction.reply({
@@ -547,6 +590,15 @@ client.on(Events.InteractionCreate, async interaction => {
         });
         return;
       }
+
+      // Extract CDN URLs from uploaded files
+      const files = interaction.fields.getUploadedFiles('photos');
+      if (!files || files.length === 0) {
+        await interaction.reply({ content: '❌ Please upload at least one photo.', ephemeral: true });
+        return;
+      }
+
+      state.photoUrls = files.map(f => f.url);
       await postListing(interaction, state);
       return;
     }
@@ -560,22 +612,12 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
-
-// ═════════════════════════════════════════════════════════════
-// SLASH COMMAND REGISTRATION — /setup_marketplace
-// ═════════════════════════════════════════════════════════════
-
-const { REST, Routes, SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
-
-const MARKETPLACE_PANEL_CHANNEL_ID = '1467358343981961247';
-const ADMIN_ROLE_ID                = '1465161088814289089';
-const BOT_ROLE_ID                  = '1465163793934848194';
-
+// ── Slash command registration ────────────────────────────────
 async function registerCommands(clientId) {
   const commands = [
     new SlashCommandBuilder()
       .setName('setup_marketplace')
-      .setDescription('Post the marketplace listing panel (run once to replace old panel)')
+      .setDescription('Post the marketplace listing panel')
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
       .toJSON(),
   ];
@@ -587,52 +629,6 @@ async function registerCommands(clientId) {
     console.error('Failed to register slash commands:', e.message);
   }
 }
-
-// ── /setup_marketplace command handler ───────────────────────
-client.on(Events.InteractionCreate, async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName !== 'setup_marketplace') return;
-
-  const member     = interaction.member;
-  const hasAdmin   = member.roles.cache.has(ADMIN_ROLE_ID);
-  const hasBotRole = member.roles.cache.has(BOT_ROLE_ID);
-  const isAdmin    = member.permissions.has(PermissionFlagsBits.Administrator);
-
-  if (!hasAdmin && !hasBotRole && !isAdmin) {
-    await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
-    return;
-  }
-
-  const channel = interaction.guild.channels.cache.get(MARKETPLACE_PANEL_CHANNEL_ID);
-  if (!channel) {
-    await interaction.reply({ content: '❌ Marketplace panel channel not found!', ephemeral: true });
-    return;
-  }
-
-  const embed = new EmbedBuilder()
-    .setTitle('Marketplace Listings')
-    .setDescription(
-      'Ready to sell? Click **Create Listing** to build your shop post!\n\n' +
-      '**Requirements:**\n' +
-      '- Photos must include a handwritten note with your username, server name, and the date\n' +
-      '- At least 1 photo required — upload directly to your listing thread after it\'s created\n' +
-      '- Listings can only be created once every **14 days**\n\n' +
-      'Creating a new listing will automatically close your previous one.'
-    )
-    .setColor(DEFAULT_COLOR);
-
-  const button = new ButtonBuilder()
-    .setCustomId('create_marketplace_listing')
-    .setLabel('Create Listing')
-    .setStyle(ButtonStyle.Secondary);
-
-  await channel.send({
-    embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(button)],
-  });
-
-  await interaction.reply({ content: `✅ Marketplace panel posted in ${channel.toString()}!`, ephemeral: true });
-});
 
 // ── Ready ─────────────────────────────────────────────────────
 client.once(Events.ClientReady, async () => {
