@@ -16,10 +16,10 @@ jobs:
       - name: Checkout bot code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install pnpm
         run: npm install -g pnpm@9
@@ -29,16 +29,13 @@ jobs:
 
       - name: Install monorepo dependencies
         working-directory: /tmp/discordjs
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
-      - name: Build discord.js and its deps from source
+      - name: Build discord.js from source
         working-directory: /tmp/discordjs
         run: pnpm turbo run build --filter=discord.js
 
-      - name: Install bot dependencies (excluding discord.js)
-        run: npm install
-
-      - name: Link discord.js from source build
+      - name: Link discord.js into bot node_modules
         run: |
           mkdir -p node_modules
           rm -rf node_modules/discord.js
