@@ -4,27 +4,45 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-  # Automatically re-trigger this workflow every 5 hours to work
-  # around GitHub Actions' 6-hour job time limit.
   schedule:
     - cron: '0 */5 * * *'
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 300  # 5 hours — safely under the 6-hour Actions limit
+    timeout-minutes: 300
 
     steps:
-      - name: Checkout code
+      - name: Checkout bot code
         uses: actions/checkout@v4
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      
-      - name: Install dependencies
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Clone discord.js main branch
+        run: git clone --depth=1 https://github.com/discordjs/discord.js.git /tmp/discordjs
+
+      - name: Install monorepo dependencies
+        working-directory: /tmp/discordjs
+        run: pnpm install --frozen-lockfile
+
+      - name: Build discord.js and its deps from source
+        working-directory: /tmp/discordjs
+        run: pnpm turbo run build --filter=discord.js
+
+      - name: Install bot dependencies (excluding discord.js)
         run: npm install
+
+      - name: Link discord.js from source build
+        run: |
+          mkdir -p node_modules
+          rm -rf node_modules/discord.js
+          ln -s /tmp/discordjs/packages/discord.js node_modules/discord.js
 
       - name: Run marketplace bot
         env:
