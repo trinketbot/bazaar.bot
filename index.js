@@ -418,7 +418,7 @@ async function handleInteraction(d) {
             inline: false,
           },
         ],
-        footer: { text: 'Successfully completed a transaction? **Give that user a brownie point!**' },
+        footer: { text: 'Successfully completed a transaction? Give that user a brownie point!' },
       };
 
       const result = await rest('POST', `/channels/${FORUM_ID}/threads`, {
