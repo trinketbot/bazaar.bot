@@ -440,7 +440,9 @@ async function handleInteraction(d) {
 
     // ── Modal: List Item submitted ─────────────────────────────
     if (type === 5 && data.custom_id === 'mp_list_item') {
+      console.log('LIST ITEM raw components:', JSON.stringify(data.components, null, 2));
       const fields = getFields(data.components);
+      console.log('LIST ITEM fields:', JSON.stringify(fields, null, 2));
 
       let name = '', price = '', condition = '', notes = '', photoUrls = [];
 
