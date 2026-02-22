@@ -378,6 +378,7 @@ async function handleInteraction(d) {
           },
           {
             name: "Current Release Caps\nRetired Item Caps",
+            value: " ",
             inline: true,
           },
           {
