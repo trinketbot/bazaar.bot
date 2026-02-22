@@ -366,10 +366,38 @@ async function handleInteraction(d) {
         "- Item photos must include a handwritten note with your username, server name, and today's date",
         "- One shop per **14 days** \u2014 opening a new shop closes your previous one",
       ].join("\n");
+      const panelEmbed = {
+        color: COLOR,
+        title: "Haus of Trinkets Marketplace",
+        description: "Ready to sell, trade, or barter?\n\n→ Click **Open Shop** to create your listing thread.\n→ Click **List Item** inside your thread to add items.",
+        fields: [
+          {
+            name: "Requirements",
+            value: "- Item photos must include a handwritten note with your username, server name, and today's date\n- One shop per **14 days** — opening a new shop closes your previous one",
+            inline: false,
+          },
+          {
+            name: "Price Caps",
+            value: "\u200b",
+            inline: false,
+          },
+          {
+            name: "Current Releases",
+            value: "**Standard Items**\n**Secrets**\n**Exclusives**",
+            inline: true,
+          },
+          {
+            name: "Retired Items",
+            value: "**Standard Items**\n**Secrets**\n**Exclusives**",
+            inline: true,
+          },
+        ],
+      };
+
       const result = await rest('POST', `/channels/${FORUM_ID}/threads`, {
-        name: 'Open a Shop',
+        name: '📋 Open a Shop',
         message: {
-          content: panelContent,
+          embeds: [panelEmbed],
           components: [{
             type: 1,
             components: [{
