@@ -383,19 +383,19 @@ async function handleInteraction(d) {
           },
           {
             name: "Current Releases",
-            value: "**Standard Items**\n**Secrets**\n**Exclusives**",
+            value: "**Standard Items**\n$1-$49  Retail + $10\n$50-$99  Retail + $15\n$100+  Retail + $20\n**Secrets**\n*Market rate*\n**Exclusives**\n*Market rate*",
             inline: true,
           },
           {
             name: "Retired Items",
-            value: "**Standard Items**\n**Secrets**\n**Exclusives**",
+            value: "**Standard Items**\n$1-$49  Retail + $20\n$50-$99  Retail + $30\n$100+  Retail + $40\n**Secrets**\n*Market rate*\n**Exclusives**\n*Market rate*",
             inline: true,
           },
         ],
       };
 
       const result = await rest('POST', `/channels/${FORUM_ID}/threads`, {
-        name: '📋 Open a Shop',
+        name: 'Open a Shop',
         message: {
           embeds: [panelEmbed],
           components: [{
