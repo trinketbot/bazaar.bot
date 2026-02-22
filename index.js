@@ -382,13 +382,13 @@ async function handleInteraction(d) {
             inline: false,
           },
            {
-            name: "Current Item Caps",
-            value: "\u200B",
+            name: "Current Items",
+            value: " ",
             inline: true,
           },
           {
-            name: "Retired Item Caps",
-            value: "\u200B",
+            name: "Retired Items",
+            value: " ",
             inline: false,
           },
           {
