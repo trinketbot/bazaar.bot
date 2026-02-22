@@ -377,18 +377,13 @@ async function handleInteraction(d) {
             inline: false,
           },
           {
-            name: "\n**Price Caps**",
-            value: "\u200b",
-            inline: false,
-          },
-          {
-            name: "Current Releases",
-            value: "**Standard Items**\n+$10 if $1-$49 Retail\n+$15 if $50-$99 Retail\n+$20 if $100+ Retail\n\n**Secrets**\n*Market rate*\n**Exclusives**\n\n*Market rate*",
+            name: "**Price Caps**\nCurrent Releases",
+            value: "**Standard Items**\n+$10 if $1-$49 Retail\n+$15 if $50-$99 Retail\n+$20 if $100+ Retail\n\n**Secrets**\n*Market rate*\n\n**Exclusives**\n*Market rate*",
             inline: true,
           },
           {
             name: "Retired Items",
-            value: "**Standard Items**\n+$20 if $1-$49 Retail\n+$30 if $50-$99 Retail\n+$40 if $100+ Retail\n\n**Secrets**\n*Market rate*\n**Exclusives**\n\n*Market rate*",
+            value: "**Standard Items**\n+$20 if $1-$49 Retail\n+$30 if $50-$99 Retail\n+$40 if $100+ Retail\n\n**Secrets**\n*Market rate*\n\n**Exclusives**\n*Market rate*",
             inline: true,
           },
         ],
