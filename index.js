@@ -1,22 +1,27 @@
 // ============================================================
 // TrinketBot — Marketplace Module
-// Raw Discord API implementation — no discord.js dependency.
-// Uses Discord Gateway (WebSocket) + REST API directly.
-// Supports select menus and file uploads inside modals via
-// the Components v2 / LabelBuilder API (type 24 components).
+// Raw Discord API. No dependencies except 'ws'.
+//
+// TWO MODALS:
+//   "Open Shop"  — creates the forum thread (run once)
+//   "List Item"  — adds an item to existing thread (run repeatedly)
+//
+// Component types used:
+//   18 = Label (wraps inner component with label + description)
+//   3  = String Select (inside Label)
+//   4  = Text Input    (inside Label)
+//   19 = File Upload   (inside Label)
 // ============================================================
 
 const WebSocket = require('ws');
 const https     = require('https');
 const fs        = require('fs');
 
-// Keep-alive agent so every REST call reuses the same TCP connection
-// instead of doing a fresh TLS handshake each time.
-const httpsAgent = new https.Agent({ keepAlive: true });
-
 const TOKEN   = process.env.MARKETPLACE_TOKEN;
 const API     = 'https://discord.com/api/v10';
 const GATEWAY = 'wss://gateway.discord.gg/?v=10&encoding=json';
+
+const httpsAgent = new https.Agent({ keepAlive: true });
 
 // ── Storage ───────────────────────────────────────────────────
 function loadJSON(file) {
@@ -26,7 +31,6 @@ function saveJSON(file, data) { fs.writeFileSync(file, JSON.stringify(data, null
 
 let cooldowns = loadJSON('cooldowns.json');
 let threads   = loadJSON('threads.json');
-const userState = new Map();
 
 // ── Config ────────────────────────────────────────────────────
 const FORUM_ID         = '1466105963621777572';
@@ -35,16 +39,17 @@ const ADMIN_ROLE_ID    = '1465161088814289089';
 const BOT_ROLE_ID      = '1465163793934848194';
 const COLOR            = 0xe0ad76;
 const COOLDOWN_DAYS    = 14;
+
 const TAG_IDS = [
-  '1466283217496707072','1466283356701331642','1466283393732837602',
-  '1466283407695806808','1466283426075115583','1466283469452873730',
-  '1466283480735420488','1466283506467602472','1466283529175437364',
-  '1466283544480448552','1466283590080794867','1466283603565482118',
-  '1466283716371288136','1466283732221820938','1466283816078278731',
-  '1466704594510811270','1474194075220443166',
+  '1466283426075115583', '1466283469452873730', '1466283480735420488',
+  '1466283506467602472', '1466283217496707072', '1466283356701331642',
+  '1466283393732837602', '1466283407695806808', '1466283544480448552',
+  '1466283529175437364', '1466283590080794867', '1466283603565482118',
+  '1466283716371288136', '1466283732221820938', '1466283816078278731',
+  '1466704594510811270', '1474194075220443166',
 ];
 
-// ── REST helper ───────────────────────────────────────────────
+// ── REST ──────────────────────────────────────────────────────
 function rest(method, path, body) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
@@ -66,8 +71,7 @@ function rest(method, path, body) {
             console.error(`REST ${method} ${path} -> ${res.statusCode}:`, JSON.stringify(parsed));
           }
           resolve(parsed);
-        }
-        catch { resolve({}); }
+        } catch { resolve({}); }
       });
     });
     req.on('error', reject);
@@ -76,175 +80,152 @@ function rest(method, path, body) {
   });
 }
 
-// ── Modal component builders ──────────────────────────────────
-// Type 24 = Label (wraps a component with label + description)
-// Type 4  = TextInput
-// Type 3  = StringSelect
-// Type 13 = FileUpload (in modals)
+function respond(id, token, type, data) {
+  return rest('POST', `/interactions/${id}/${token}/callback`, { type, data });
+}
+function showModal(id, token, modal) { return respond(id, token, 9, modal); }
+function replyEphemeral(id, token, content) { return respond(id, token, 4, { content, flags: 64 }); }
 
-let _labelId = 1;
-function labelId() { return _labelId++; }
+// ── Label builder ─────────────────────────────────────────────
+// Each label needs a unique integer id within the modal.
+// We use a simple counter reset per modal build.
+let _lid = 1;
+const nextId = () => _lid++;
+function resetIds() { _lid = 1; }
 
-function textInput(customId, label, placeholder, paragraph = false, required = true, maxLength = 200) {
-  return {
-    type: 18,
-    id: labelId(),
-    label,
-    component: {
-      type: 4,
-      custom_id: customId,
-      style: paragraph ? 2 : 1,
-      placeholder,
-      required,
-      max_length: maxLength,
-    },
-  };
+function label(id, labelText, description, innerComponent) {
+  return { type: 18, id, label: labelText.slice(0, 45), description: description?.slice(0, 100), component: innerComponent };
+}
+function textInput(id, placeholder, paragraph = false, required = true, maxLength = 200) {
+  return { type: 4, id, style: paragraph ? 2 : 1, placeholder, required, max_length: maxLength };
+}
+function stringSelect(id, placeholder, options, minValues, maxValues, required = true) {
+  return { type: 3, id, placeholder, options, min_values: minValues, max_values: maxValues, required };
+}
+function fileUpload(id, minValues, maxValues, required = true) {
+  return { type: 19, id, min_values: minValues, max_values: maxValues, required };
 }
 
-function selectMenu(customId, label, description, options, minValues = 1, maxValues = 1, required = true) {
-  return {
-    type: 18,
-    id: labelId(),
-    label,
-    description,
-    component: {
-      type: 3,
-      custom_id: customId,
-      options,
-      min_values: minValues,
-      max_values: maxValues,
-      required,
-    },
-  };
+// ── Checkbox / Radio builders ─────────────────────────────────
+// type 22 = Checkbox Group (multi-select, returns values[])
+// type 21 = Radio Group    (single-select, returns value)
+function checkboxGroup(id, options, minValues, maxValues, required = true) {
+  return { type: 22, id, options, min_values: minValues, max_values: maxValues, required };
 }
-
-function fileUpload(customId, label, description, minValues = 1, maxValues = 10, required = true) {
-  return {
-    type: 18,
-    id: labelId(),
-    label,
-    description,
-    component: {
-      type: 13,
-      custom_id: customId,
-      min_values: minValues,
-      max_values: maxValues,
-      required,
-    },
-  };
+function radioGroup(id, options, required = true) {
+  return { type: 21, id, options, required };
 }
 
 // ── Option sets ───────────────────────────────────────────────
+const TRANSACTION_OPTS = [
+  { label: 'Sale',   value: 'Sale'   },
+  { label: 'Trade',  value: 'Trade'  },
+  { label: 'Barter', value: 'Barter' },
+];
 const PAYMENT_OPTS = [
   { label: 'PayPal G&S', value: 'PayPal G&S' },
   { label: 'Venmo G&S',  value: 'Venmo G&S'  },
-  { label: 'Other',      value: 'Other', description: '(see notes)' },
+  { label: 'Other',      value: 'Other', description: 'see notes' },
 ];
 const SHIPPING_OPTS = [
   { label: 'Shipping cost included',   value: 'included'   },
   { label: 'Shipping cost additional', value: 'additional' },
 ];
-const PACKAGING_OPTS = [
-  { label: 'Box sealed',        value: 'Box sealed'        },
-  { label: 'Box resealed',      value: 'Box resealed'      },
-  { label: 'No box',            value: 'No box'            },
-  { label: 'Tags attached',     value: 'Tags attached'     },
-  { label: 'Tags detached',     value: 'Tags detached'     },
-  { label: 'No tags',           value: 'No tags'           },
-  { label: 'Other (see notes)', value: 'Other (see notes)' },
-];
 const CONDITION_OPTS = [
-  { label: 'Sealed',            value: 'Sealed'            },
-  { label: 'Opened',            value: 'Opened'            },
-  { label: 'New',               value: 'New'               },
-  { label: 'Other (see notes)', value: 'Other (see notes)' },
+  { label: 'Boxed — sealed',       value: 'Boxed — sealed'       },
+  { label: 'Boxed — top open',     value: 'Boxed — top open'     },
+  { label: 'Boxed — bottom open',  value: 'Boxed — bottom open'  },
+  { label: 'Boxed — fully open',   value: 'Boxed — fully open'   },
+  { label: 'Boxed — no box',       value: 'Boxed — no box'       },
+  { label: 'Tagged — NWT',         value: 'Tagged — NWT'         },
+  { label: 'Tagged — NWRT',        value: 'Tagged — NWRT'        },
+  { label: 'Tagged — NWOT',        value: 'Tagged — NWOT'        },
+  { label: 'Pre-loved',            value: 'Pre-loved'            },
+  { label: 'Other',                value: 'Other'                },
 ];
 
-// ── Modal payloads ────────────────────────────────────────────
-function step1Modal() {
+// ── "Open Shop" modal ─────────────────────────────────────────
+// 5 labels max. We use all 5:
+//   1. Transaction types (select, 1-3)
+//   2. Accepted payments (select, 1-3)
+//   3. Shipping (select, 1)
+//   4. Tags (select, 1-17)
+//   5. General notes (text, optional)
+async function buildOpenShopModal(guildId) {
+  resetIds();
+
+  // Fetch forum tags
+  const forum = await rest('GET', `/channels/${FORUM_ID}`);
+  const tagMap = {};
+  for (const t of forum.available_tags || []) tagMap[t.id] = t.name;
+  const tagOpts = TAG_IDS
+    .filter(id => tagMap[id])
+    .map(id => ({ label: tagMap[id].slice(0, 100), value: id }));
+
+  const l1 = nextId(), inner1 = nextId();
+  const l2 = nextId(), inner2 = nextId();
+  const l3 = nextId(), inner3 = nextId();
+  const l4 = nextId(), inner4 = nextId();
+  const l5 = nextId(), inner5 = nextId();
+
   return {
-    title: 'Create Listing — Step 1',
-    custom_id: 'mp_s1',
+    title: 'Open Shop',
+    custom_id: 'mp_open_shop',
     components: [
-      textInput('count', 'How many items? (1–10)', 'e.g. 3', false, true, 2),
-      textInput('info', 'General info (optional)', 'Shipping notes, bundle deals, location…', true, false, 500),
+      label(l1, 'Transaction Types', 'Select all that apply',
+        checkboxGroup(inner1, TRANSACTION_OPTS, 1, 3)),
+      label(l2, 'Accepted Payments', 'Select all that apply',
+        checkboxGroup(inner2, PAYMENT_OPTS, 1, 3)),
+      label(l3, 'Shipping', 'Select one',
+        radioGroup(inner3, SHIPPING_OPTS)),
+      label(l4, 'Tags', 'Select all that apply (1–17)',
+        stringSelect(inner4, 'Choose tags…', tagOpts, 1, Math.min(tagOpts.length, 25))),
+      label(l5, 'General Notes (optional)', 'Bundle deals, location, other info',
+        textInput(inner5, 'e.g. Bundle deals available, ships from NY…', true, false, 500)),
     ],
   };
 }
 
-function step2Modal() {
+// ── "List Item" modal ─────────────────────────────────────────
+// 4 labels:
+//   1. Item name (text)
+//   2. Price USD (text)
+//   3. Condition (select)
+//   4. Photos (file upload, 1-5)
+//   5. Additional notes (text, optional)
+function buildListItemModal() {
+  resetIds();
+  const l1 = nextId(), inner1 = nextId();
+  const l2 = nextId(), inner2 = nextId();
+  const l3 = nextId(), inner3 = nextId();
+  const l4 = nextId(), inner4 = nextId();
+  const l5 = nextId(), inner5 = nextId();
+
   return {
-    title: 'Create Listing — Step 2',
-    custom_id: 'mp_s2',
+    title: 'List Item',
+    custom_id: 'mp_list_item',
     components: [
-      selectMenu('payment', 'Accepted payment methods', 'Select all that apply', PAYMENT_OPTS, 1, 3),
-      selectMenu('shipping', 'Shipping policy', 'Is shipping included or extra?', SHIPPING_OPTS, 1, 1),
+      label(l1, 'Item Name', 'Full name of the item',
+        textInput(inner1, 'e.g. Jellycat Bashful Bunny Medium', false, true, 200)),
+      label(l2, 'Price (USD)', 'Numbers only — no $ symbol',
+        textInput(inner2, 'e.g. 35.00', false, true, 10)),
+      label(l3, 'Condition', 'Select the condition that best applies',
+        stringSelect(inner3, 'Select condition…', CONDITION_OPTS, 1, 1)),
+      label(l4, 'Item Photos (1–5)', 'Upload 1 to 5 photos of this item',
+        fileUpload(inner4, 1, 5)),
+      label(l5, 'Additional Notes (optional)', 'Flaws, details, extras',
+        textInput(inner5, 'e.g. Minor scuff on ear, barely noticeable', true, false, 500)),
     ],
   };
 }
 
-function itemModal(i, total) {
-  return {
-    title: `Item ${i + 1} of ${total}`,
-    custom_id: `mp_item_${i}`,
-    components: [
-      textInput('name',  'Item name',              'e.g. Jellycat Bashful Bunny Medium', false, true,  200),
-      textInput('price', 'Price (USD)',             'e.g. 35.00 — no $ symbol',           false, true,  20),
-      textInput('notes', 'Notes (optional)',        'Condition details, flaws, extras',    true,  false, 500),
-      selectMenu('packaging', 'Packaging condition', 'How is the item packaged?',          PACKAGING_OPTS, 1, 1),
-      selectMenu('condition', 'Item condition',      'What condition is the item itself?', CONDITION_OPTS, 1, 1),
-    ],
-  };
-}
-
-async function tagModal(guildId) {
-  const forum = guildCache[guildId]?.channels?.[FORUM_ID];
-  const tags  = forum?.available_tags || [];
-  const opts  = TAG_IDS
-    .filter(id => tags.find(t => t.id === id))
-    .map(id => ({ label: tags.find(t => t.id === id).name.slice(0, 100), value: id }));
-  if (!opts.length) return null;
-  return {
-    title: 'Create Listing — Tags',
-    custom_id: 'mp_tags',
-    components: [
-      selectMenu('tags', 'Listing tags', 'Select all tags that describe your items', opts, 1, Math.min(opts.length, 25)),
-    ],
-  };
-}
-
-function photoModal() {
-  return {
-    title: 'Create Listing — Photos',
-    custom_id: 'mp_photos',
-    components: [
-      fileUpload('photos', 'Photos (1–10 files)', "Each must show a handwritten note: username, server name, today's date"),
-      textInput('confirm', 'Confirm handwritten note', 'Type YES to confirm', false, true, 3),
-    ],
-  };
-}
-
-// ── Response helpers ──────────────────────────────────────────
-function respond(interactionId, interactionToken, type, data) {
-  return rest('POST', `/interactions/${interactionId}/${interactionToken}/callback`, { type, data });
-}
-
-function showModal(interactionId, token, modal) {
-  return respond(interactionId, token, 9, modal);
-}
-
-function replyEphemeral(interactionId, token, content) {
-  return respond(interactionId, token, 4, { content, flags: 64 });
-}
-
-// ── Field extraction from modal submit ───────────────────────
+// ── Extract fields from modal submit ─────────────────────────
 function getFields(components) {
   const fields = {};
   function walk(comps) {
-    for (const c of comps) {
-      if (c.type === 24 && c.component) {
-        const inner = c.component;
-        if (inner.custom_id) fields[inner.custom_id] = inner;
+    for (const c of comps || []) {
+      if (c.type === 18 && c.component?.custom_id) {
+        fields[c.component.custom_id] = c.component;
       }
       if (c.components) walk(c.components);
     }
@@ -253,111 +234,130 @@ function getFields(components) {
   return fields;
 }
 
-function textVal(fields, id) { return fields[id]?.value?.trim() || ''; }
+function textVal(fields, id)    { return fields[id]?.value?.trim?.() || ''; }
 function selectVals(fields, id) { return fields[id]?.values || []; }
-function uploadedFiles(fields, id) { return fields[id]?.files || []; }
+function fileVals(fields, id)   { return fields[id]?.files || []; }
 
-// ── Guild cache (for forum tags) ──────────────────────────────
-const guildCache = {};
-
-// ── Post listing ──────────────────────────────────────────────
-async function postListing(interactionId, token, state) {
-  const { userId, username, avatarUrl } = state;
-
+// ── Post forum thread (Open Shop) ─────────────────────────────
+async function postShop(iid, token, userId, username, avatarUrl, state) {
   // Archive old thread
   if (threads[userId]) {
     try { await rest('PATCH', `/channels/${threads[userId]}`, { archived: true, locked: true }); } catch {}
   }
 
-  // Resolve tags
-  const forum    = await rest('GET', `/channels/${FORUM_ID}`);
-  const tagObjs  = forum.available_tags || [];
-  const tagObjMap = {};
-  for (const t of tagObjs) tagObjMap[t.id] = t;
-  const appliedTagIds = (state.tags || []).map(id => tagObjMap[id]?.id).filter(Boolean).slice(0, 5);
+  const forum   = await rest('GET', `/channels/${FORUM_ID}`);
+  const tagObjs = (forum.available_tags || []).reduce((m, t) => { m[t.id] = t; return m; }, {});
+  const appliedTagIds = (state.tags || []).map(id => tagObjs[id]?.id).filter(Boolean).slice(0, 5);
 
   if (!appliedTagIds.length) {
-    return replyEphemeral(interactionId, token, '❌ None of the selected tags were found. Please contact an admin.');
+    return replyEphemeral(iid, token, '❌ None of the selected tags were found. Please contact an admin.');
   }
 
   const shippingLabel = state.shipping === 'included' ? 'Shipping cost included' : 'Shipping cost additional';
 
-  // Build embed fields
-  const fields = [];
-  for (const [i, item] of state.items.entries()) {
-    let value = `**${item.name}** — $${item.price}\nPackaging: ${item.packaging}  |  Condition: ${item.condition}`;
-    if (item.notes) value += `\n> ${item.notes}`;
-    fields.push({ name: `Item ${i + 1}`, value, inline: false });
-  }
-  fields.push({ name: 'Payment',  value: state.payment.join(', '), inline: true });
-  fields.push({ name: 'Shipping', value: shippingLabel,             inline: true });
-  if (state.info) fields.push({ name: 'General Info', value: state.info, inline: false });
-  if (state.photoUrls?.length) {
-    fields.push({
-      name: '📸 Photos',
-      value: state.photoUrls.map((u, i) => `[Photo ${i + 1}](${u})`).join('\n'),
-      inline: false,
-    });
-  }
-
   const embed = {
-    title:  `${username}'s Shop`,
-    color:  COLOR,
-    author: { name: username, icon_url: avatarUrl },
-    fields,
-    image:  state.photoUrls?.[0] ? { url: state.photoUrls[0] } : undefined,
-    footer: { text: `Seller ID: ${userId}` },
+    title:     `${username}'s Shop`,
+    color:     COLOR,
+    author:    { name: username, icon_url: avatarUrl },
+    fields: [
+      { name: 'Transaction Types', value: state.transactions.join(', '), inline: true },
+      { name: 'Payment',           value: state.payment.join(', '),      inline: true },
+      { name: 'Shipping',          value: shippingLabel,                  inline: true },
+      ...(state.notes ? [{ name: 'General Notes', value: state.notes, inline: false }] : []),
+    ],
+    footer:    { text: `Seller ID: ${userId} • Use "List Item" button to add items` },
     timestamp: new Date().toISOString(),
   };
 
   try {
     const result = await rest('POST', `/channels/${FORUM_ID}/threads`, {
       name:         `${username}'s Shop`,
-      message:      { content: `**<@${userId}>'s Shop Listing**`, embeds: [embed] },
+      message:      {
+        content: `**<@${userId}>'s Shop**\n-# Click **List Item** below to add items to this post.`,
+        embeds:  [embed],
+        components: [{
+          type: 1,
+          components: [{
+            type: 2, style: 2,
+            label: 'List Item',
+            custom_id: 'add_listing_item',
+          }],
+        }],
+      },
       applied_tags: appliedTagIds,
     });
 
-    const threadId = result.id;
-    threads[userId]   = threadId;
+    threads[userId]   = result.id;
     cooldowns[userId] = new Date().toISOString();
     saveJSON('threads.json',   threads);
     saveJSON('cooldowns.json', cooldowns);
-    userState.delete(userId);
 
-    await replyEphemeral(interactionId, token, `✅ Your listing has been created: <#${threadId}>`);
+    await replyEphemeral(iid, token, `✅ Your shop has been created: <#${result.id}>\nClick **List Item** in the thread to add your first item.`);
   } catch (e) {
-    console.error('postListing error:', e);
-    await replyEphemeral(interactionId, token, `❌ Failed to create listing: ${e.message}`);
+    console.error('postShop error:', e);
+    await replyEphemeral(iid, token, `❌ Failed to create shop: ${e.message}`);
+  }
+}
+
+// ── Post item to existing thread ──────────────────────────────
+async function postItem(iid, token, userId, username, avatarUrl, state) {
+  const threadId = threads[userId];
+  if (!threadId) {
+    return replyEphemeral(iid, token, '❌ No active shop found. Open a shop first using the panel button.');
+  }
+
+  const photoLinks = (state.photoUrls || []).map((u, i) => `[Photo ${i + 1}](${u})`).join('  ');
+
+  const embed = {
+    color: COLOR,
+    author: { name: `${username} — New Item`, icon_url: avatarUrl },
+    fields: [
+      { name: 'Item',      value: `**${state.name}** — $${state.price}`, inline: false },
+      { name: 'Condition', value: state.condition,                        inline: true  },
+      ...(state.notes ? [{ name: 'Notes', value: state.notes, inline: false }] : []),
+      ...(photoLinks   ? [{ name: 'Photos', value: photoLinks, inline: false }] : []),
+    ],
+    image:    state.photoUrls?.[0] ? { url: state.photoUrls[0] } : undefined,
+    timestamp: new Date().toISOString(),
+  };
+
+  try {
+    await rest('POST', `/channels/${threadId}/messages`, { embeds: [embed] });
+    await replyEphemeral(iid, token, `✅ Item added to your shop!`);
+  } catch (e) {
+    console.error('postItem error:', e);
+    await replyEphemeral(iid, token, `❌ Failed to add item: ${e.message}`);
   }
 }
 
 // ── Interaction handler ───────────────────────────────────────
 async function handleInteraction(d) {
   const { id, token, type, data, member, guild_id } = d;
-  const userId   = member?.user?.id || d.user?.id;
-  const username = member?.user?.username || d.user?.username;
+  const userId     = member?.user?.id || d.user?.id;
+  const username   = member?.user?.username || d.user?.username;
   const avatarHash = member?.user?.avatar || d.user?.avatar;
   const avatarUrl  = avatarHash
     ? `https://cdn.discordapp.com/avatars/${userId}/${avatarHash}.png`
     : `https://cdn.discordapp.com/embed/avatars/0.png`;
 
   try {
-    // ── Slash commands ──────────────────────────────────────
+
+    // ── /setup_market slash command ────────────────────────────
     if (type === 2 && data.name === 'setup_market') {
       const roles  = member?.roles || [];
       const perms  = BigInt(member?.permissions || '0');
       const isAdmin = roles.includes(ADMIN_ROLE_ID) || roles.includes(BOT_ROLE_ID) || (perms & 8n) === 8n;
-      if (!isAdmin) return replyEphemeral(id, token, "❌ You don't have permission to use this command.");
+      if (!isAdmin) return replyEphemeral(id, token, "❌ You don't have permission.");
 
       const panelEmbed = {
-        title: 'Marketplace Listings',
+        title: 'Haus of Trinkets Marketplace',
         description:
-          'Ready to sell? Click **Create Listing** to build your shop post!\n\n' +
+          'Ready to sell, trade, or barter?\n\n' +
+          '**→ Click Open Shop** to create your listing thread.\n' +
+          '**→ Click List Item** inside your thread to add items.\n\n' +
           '**Requirements:**\n' +
-          '- Photos must include a handwritten note: username, server name, and today\'s date\n' +
-          '- 1–10 photos required\n' +
-          '- One listing per **14 days**\n\n' +
-          'Creating a new listing will automatically close your previous one.',
+          '- Item photos must include a handwritten note with your username, server name, and today\'s date\n' +
+          '- One shop per **14 days** — opening a new shop closes your previous one',
         color: COLOR,
       };
 
@@ -366,17 +366,16 @@ async function handleInteraction(d) {
         components: [{
           type: 1,
           components: [{
-            type: 2,
-            style: 2,
-            label: 'Create Listing',
+            type: 2, style: 2,
+            label: 'Open Shop',
             custom_id: 'create_marketplace_listing',
           }],
         }],
       });
-      return replyEphemeral(id, token, `✅ Panel posted in <#${PANEL_CHANNEL_ID}>!`);
+      return replyEphemeral(id, token, `✅ Marketplace panel posted in <#${PANEL_CHANNEL_ID}>!`);
     }
 
-    // ── Button: Create Listing ──────────────────────────────
+    // ── "Open Shop" button ─────────────────────────────────────
     if (type === 3 && data.custom_id === 'create_marketplace_listing') {
       if (cooldowns[userId]) {
         const diffDays = (Date.now() - new Date(cooldowns[userId]).getTime()) / 86400000;
@@ -385,83 +384,106 @@ async function handleInteraction(d) {
           const nextDate = new Date(new Date(cooldowns[userId]).getTime() + COOLDOWN_DAYS * 86400000)
             .toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
           return replyEphemeral(id, token,
-            `❌ You can only create a listing once every ${COOLDOWN_DAYS} days.\nNext listing available: **${nextDate}** (~${daysLeft} day${daysLeft !== 1 ? 's' : ''}).`
+            `❌ You can only open a shop once every ${COOLDOWN_DAYS} days.\nNext available: **${nextDate}** (~${daysLeft} day${daysLeft !== 1 ? 's' : ''}).`
           );
         }
       }
-      userState.set(userId, { userId, username, avatarUrl, items: [], tags: [] });
-      return showModal(id, token, step1Modal());
+      const modal = await buildOpenShopModal(guild_id);
+      return showModal(id, token, modal);
     }
 
-    // ── Modal submissions ───────────────────────────────────
-    if (type === 5) {
-      const customId = data.custom_id;
-      const fields   = getFields(data.components);
-      const state    = userState.get(userId);
-
-      // Step 1
-      if (customId === 'mp_s1') {
-        const count = parseInt(textVal(fields, 'count'), 10);
-        if (isNaN(count) || count < 1 || count > 10) {
-          return replyEphemeral(id, token, '❌ Please enter a whole number between 1 and 10.');
-        }
-        userState.set(userId, {
-          userId, username, avatarUrl,
-          itemCount: count,
-          info:      textVal(fields, 'info'),
-          items: [], tags: [], payment: null, shipping: null,
-        });
-        return showModal(id, token, step2Modal());
+    // ── "List Item" button (inside shop thread) ────────────────
+    if (type === 3 && data.custom_id === 'add_listing_item') {
+      if (!threads[userId]) {
+        return replyEphemeral(id, token, '❌ No active shop found. Please open a shop first.');
       }
-
-      // Step 2
-      if (customId === 'mp_s2') {
-        if (!state) return replyEphemeral(id, token, '❌ Session expired. Please start again.');
-        state.payment  = selectVals(fields, 'payment');
-        state.shipping = selectVals(fields, 'shipping')[0];
-        return showModal(id, token, itemModal(0, state.itemCount));
-      }
-
-      // Per-item modals
-      if (customId.startsWith('mp_item_')) {
-        if (!state) return replyEphemeral(id, token, '❌ Session expired. Please start again.');
-        const i     = parseInt(customId.split('_')[2], 10);
-        const price = parseFloat(textVal(fields, 'price').replace(/[$,]/g, ''));
-        if (isNaN(price) || price <= 0) {
-          return replyEphemeral(id, token, '❌ Price must be a positive number (e.g. 25.00).');
-        }
-        state.items.push({
-          name:      textVal(fields, 'name'),
-          price:     price.toFixed(2),
-          notes:     textVal(fields, 'notes'),
-          packaging: selectVals(fields, 'packaging')[0],
-          condition: selectVals(fields, 'condition')[0],
-        });
-        const next = i + 1;
-        if (next < state.itemCount) return showModal(id, token, itemModal(next, state.itemCount));
-        const tm = await tagModal(guild_id);
-        return tm ? showModal(id, token, tm) : showModal(id, token, photoModal());
-      }
-
-      // Tags
-      if (customId === 'mp_tags') {
-        if (!state) return replyEphemeral(id, token, '❌ Session expired. Please start again.');
-        state.tags = selectVals(fields, 'tags');
-        return showModal(id, token, photoModal());
-      }
-
-      // Photos
-      if (customId === 'mp_photos') {
-        if (!state) return replyEphemeral(id, token, '❌ Session expired. Please start again.');
-        if (textVal(fields, 'confirm').toUpperCase() !== 'YES') {
-          return replyEphemeral(id, token, '❌ You must type **YES** to confirm every photo includes the required handwritten note.');
-        }
-        const files = uploadedFiles(fields, 'photos');
-        if (!files.length) return replyEphemeral(id, token, '❌ Please upload at least one photo.');
-        state.photoUrls = files.map(f => f.url);
-        return postListing(id, token, state);
-      }
+      return showModal(id, token, buildListItemModal());
     }
+
+    // ── Modal: Open Shop submitted ─────────────────────────────
+    if (type === 5 && data.custom_id === 'mp_open_shop') {
+      const fields = getFields(data.components);
+
+      let transactionVals = [], paymentVals = [], shippingVal = '', tagVals = [], notes = '';
+
+      for (const comp of Object.values(fields)) {
+        // Checkbox Group (type 22) returns values[]
+        if (comp.type === 22 && comp.values) {
+          if (comp.values.every(v => TRANSACTION_OPTS.some(o => o.value === v))) transactionVals = comp.values;
+          else if (comp.values.every(v => PAYMENT_OPTS.some(o => o.value === v))) paymentVals = comp.values;
+        }
+        // Radio Group (type 21) returns value (single string)
+        if (comp.type === 21 && comp.value) {
+          if (SHIPPING_OPTS.some(o => o.value === comp.value)) shippingVal = comp.value;
+        }
+        // String Select (type 3) for tags
+        if (comp.type === 3 && comp.values) {
+          if (comp.values.every(v => TAG_IDS.includes(v))) tagVals = comp.values;
+        }
+        // Text Input (type 4) for notes
+        if (comp.type === 4) notes = comp.value?.trim() || '';
+      }
+
+      if (!transactionVals.length) return replyEphemeral(id, token, '❌ Please select at least one transaction type.');
+      if (!paymentVals.length)     return replyEphemeral(id, token, '❌ Please select at least one payment method.');
+      if (!shippingVal)            return replyEphemeral(id, token, '❌ Please select a shipping option.');
+      if (!tagVals.length)         return replyEphemeral(id, token, '❌ Please select at least one tag.');
+
+      return postShop(id, token, userId, username, avatarUrl, {
+        transactions: transactionVals,
+        payment:      paymentVals,
+        shipping:     shippingVal,
+        tags:         tagVals,
+        notes,
+      });
+    }
+
+    // ── Modal: List Item submitted ─────────────────────────────
+    if (type === 5 && data.custom_id === 'mp_list_item') {
+      const fields = getFields(data.components);
+
+      let name = '', price = '', condition = '', notes = '', photoUrls = [];
+
+      for (const comp of Object.values(fields)) {
+        if (comp.type === 4) {
+          const val = comp.value?.trim() || '';
+          if (!name && val && !val.includes('.') && isNaN(parseFloat(val))) name = val;
+          else if (!name) name = val;
+          // price: short text that looks like a number
+          if (!price && /^\d/.test(val) && val.length <= 10) price = val;
+          if (comp.style === 2) notes = val; // paragraph = notes
+        }
+        if (comp.type === 3 && comp.values) condition = comp.values[0];
+        if (comp.type === 19 && comp.files)  photoUrls = comp.files.map(f => f.url);
+      }
+
+      // More reliable: match by custom_id position since we know the order
+      const comps = Object.values(fields);
+      const textComps = comps.filter(c => c.type === 4);
+      const selectComps = comps.filter(c => c.type === 3);
+      const fileComps  = comps.filter(c => c.type === 19);
+
+      name      = textComps[0]?.value?.trim() || '';
+      price     = textComps[1]?.value?.trim().replace(/[$,]/g, '') || '';
+      notes     = textComps[2]?.value?.trim() || '';
+      condition = selectComps[0]?.values?.[0] || '';
+      photoUrls = (fileComps[0]?.files || []).map(f => f.url);
+
+      const parsedPrice = parseFloat(price);
+      if (!name)                          return replyEphemeral(id, token, '❌ Item name is required.');
+      if (isNaN(parsedPrice) || parsedPrice <= 0) return replyEphemeral(id, token, '❌ Price must be a positive number (e.g. 35.00).');
+      if (!condition)                     return replyEphemeral(id, token, '❌ Please select a condition.');
+      if (!photoUrls.length)              return replyEphemeral(id, token, '❌ Please upload at least one photo.');
+
+      return postItem(id, token, userId, username, avatarUrl, {
+        name,
+        price: parsedPrice.toFixed(2),
+        condition,
+        notes,
+        photoUrls,
+      });
+    }
+
   } catch (err) {
     console.error('Interaction error:', err);
     try { await replyEphemeral(id, token, `❌ An error occurred: ${err.message}`); } catch {}
@@ -473,8 +495,8 @@ async function registerCommands(appId) {
   try {
     await rest('PUT', `/applications/${appId}/commands`, [{
       name: 'setup_market',
-      description: 'Post the marketplace listing panel',
-      default_member_permissions: '32', // ManageGuild
+      description: 'Post the marketplace panel',
+      default_member_permissions: '32',
     }]);
     console.log('Slash commands registered.');
   } catch (e) {
@@ -484,84 +506,46 @@ async function registerCommands(appId) {
 
 // ── Gateway ───────────────────────────────────────────────────
 let heartbeatInterval = null;
-let sessionId         = null;
-let resumeUrl         = null;
-let sequence          = null;
-let appId             = null;
-let ws                = null;
+let resumeUrl = null;
+let sequence  = null;
+let ws        = null;
 
 function connect(url = GATEWAY) {
   ws = new WebSocket(url);
 
   ws.on('message', async raw => {
-    const msg = JSON.parse(raw);
-    const { op, d, s, t } = msg;
+    const { op, d, s, t } = JSON.parse(raw);
     if (s) sequence = s;
 
-    if (op === 10) { // Hello
-      heartbeatInterval = setInterval(() => {
-        ws.send(JSON.stringify({ op: 1, d: sequence }));
-      }, d.heartbeat_interval);
-
-      // Identify
-      ws.send(JSON.stringify({
-        op: 2,
-        d: {
-          token:   TOKEN,
-          intents: 1 << 0, // GUILDS
-          properties: { os: 'linux', browser: 'bot', device: 'bot' },
-        },
-      }));
+    if (op === 10) {
+      heartbeatInterval = setInterval(() => ws.send(JSON.stringify({ op: 1, d: sequence })), d.heartbeat_interval);
+      ws.send(JSON.stringify({ op: 2, d: { token: TOKEN, intents: 1, properties: { os: 'linux', browser: 'bot', device: 'bot' } } }));
     }
+    if (op === 7) { ws.close(); connect(resumeUrl || GATEWAY); }
+    if (op === 9) { setTimeout(() => connect(GATEWAY), 5000); }
 
-    if (op === 11) {} // Heartbeat ACK — no action needed
-
-    if (op === 7) { // Reconnect
-      ws.close();
-      connect(resumeUrl || GATEWAY);
-    }
-
-    if (op === 9) { // Invalid session
-      setTimeout(() => connect(GATEWAY), 5000);
-    }
-
-    if (op === 0) { // Dispatch
+    if (op === 0) {
       if (t === 'READY') {
-        sessionId = d.session_id;
         resumeUrl = d.resume_gateway_url;
-        appId     = d.application.id;
         console.log(`Marketplace bot ready — logged in as ${d.user.username}#${d.user.discriminator}`);
-        await registerCommands(appId);
+        await registerCommands(d.application.id);
       }
-
-      if (t === 'GUILD_CREATE') {
-        // Cache forum channel for tag resolution
-        if (d.channels) {
-          guildCache[d.id] = guildCache[d.id] || { channels: {} };
-          for (const ch of d.channels) {
-            if (ch.id === FORUM_ID) guildCache[d.id].channels[FORUM_ID] = ch;
-          }
-        }
-      }
-
-      if (t === "INTERACTION_CREATE") {
-        const _t0 = Date.now();
-        console.log("INTERACTION received:", JSON.stringify({ type: d.type, custom_id: d.data?.custom_id ?? d.data?.name }));
+      if (t === 'INTERACTION_CREATE') {
+        const t0 = Date.now();
+        console.log('INTERACTION received:', JSON.stringify({ type: d.type, custom_id: d.data?.custom_id ?? d.data?.name }));
         await handleInteraction(d);
-        console.log(`INTERACTION handled in ${Date.now() - _t0}ms`);
+        console.log(`INTERACTION handled in ${Date.now() - t0}ms`);
       }
     }
   });
 
-  ws.on('close', (code, reason) => {
+  ws.on('close', (code) => {
     clearInterval(heartbeatInterval);
-    console.log(`WebSocket closed (${code}): ${reason}. Reconnecting in 5s…`);
+    console.log(`WebSocket closed (${code}). Reconnecting in 5s…`);
     setTimeout(() => connect(resumeUrl || GATEWAY), 5000);
   });
 
-  ws.on('error', err => {
-    console.error('WebSocket error:', err.message);
-  });
+  ws.on('error', err => console.error('WebSocket error:', err.message));
 }
 
 connect();
