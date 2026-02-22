@@ -377,13 +377,27 @@ async function handleInteraction(d) {
             inline: false,
           },
           {
-            name: "Current Release Caps",
-            value: "\n**Standard Items**\n+$10   if $1-$49 Retail\n+$15   if $50-$99 Retail\n+$20   if $100+ Retail\n\n**Secrets**\n*Market rate*\n\n**Exclusives**\n*Market rate*",
+            name: "Current Release Caps\nRetired Item Caps",
             inline: true,
           },
           {
-            name: "Retired Item Caps",
-            value: "\n**Standard Items**\n+$20   if $1-$49 Retail\n+$30   if $50-$99 Retail\n+$40   if $100+ Retail\n\n**Secrets**\n*Market rate*\n\n**Exclusives**\n*Market rate*",
+            name: "Standard Items",
+            value: "+$10   if $1-$49 Retail\n+$15   if $50-$99 Retail\n+$20   if $100+ Retail",
+            inline: true,
+          },
+          {
+            name: "Secrets & Exclusives",
+            value: "*Market value*".
+            inline: true,
+          },
+          {
+            name: "Standard Items",
+            value: "+$20   if $1-$49 Retail\n+$30   if $50-$99 Retail\n+$40   if $100+ Retail*",
+            inline: true,
+          },
+          {
+            name: "Secrets & Exclusives",
+            value: "*Market value*".
             inline: true,
           },
         ],
