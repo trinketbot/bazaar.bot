@@ -410,19 +410,15 @@ async function handleInteraction(d) {
           {
             name: "Secrets & Exclusives",
             value: "*Market value*",
-            inline: true,
-          },
-           {
-            name: " ",
-            value: " ",
-            inline: false,
-          },
-           {
-            name: "Successfully completed a transaction?",
-            value: "Give that user a brownie point!",
-            inline: false,
+            inline: true
           },
         ],
+      };  
+      ].join("\n");
+      const panelEmbed = {
+        color: COLOR,
+        title: "Successfully completed a transaction?",
+        description: "Give that user a brownie point!"
       };
 
       const result = await rest('POST', `/channels/${FORUM_ID}/threads`, {
