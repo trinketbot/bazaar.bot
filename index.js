@@ -367,7 +367,7 @@ async function handleInteraction(d) {
         "- One shop per **14 days** \u2014 opening a new shop closes your previous one",
       ].join("\n");
       const result = await rest('POST', `/channels/${FORUM_ID}/threads`, {
-        name: '📋 Open a Shop',
+        name: 'Open a Shop',
         message: {
           content: panelContent,
           components: [{
