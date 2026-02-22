@@ -356,18 +356,16 @@ async function handleInteraction(d) {
 
       // Create a forum thread in the marketplace forum containing the panel
       const panelContent = [
-        '## Haus of Trinkets Marketplace',
-        'Ready to sell, trade, or barter?',
-        '',
-        '→ Click **Open Shop** to create your listing thread.',
-        '→ Click **List Item** inside your thread to add items.',
-        '',
-        '**Requirements:**',
-        '- Item photos must include a handwritten note with your username, server name, and the date',
-        '- One shop per **14 days** — opening a new shop closes your previous one',
-      ].join('
-');
-
+        "## Haus of Trinkets Marketplace",
+        "Ready to sell, trade, or barter?",
+        "",
+        "\u2192 Click **Open Shop** to create your listing thread.",
+        "\u2192 Click **List Item** inside your thread to add items.",
+        "",
+        "**Requirements:**",
+        "- Item photos must include a handwritten note with your username, server name, and today's date",
+        "- One shop per **14 days** \u2014 opening a new shop closes your previous one",
+      ].join("\n");
       const result = await rest('POST', `/channels/${FORUM_ID}/threads`, {
         name: '📋 Open a Shop',
         message: {
