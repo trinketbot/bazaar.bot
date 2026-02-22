@@ -31,6 +31,7 @@ function saveJSON(file, data) { fs.writeFileSync(file, JSON.stringify(data, null
 
 let cooldowns = loadJSON('cooldowns.json');
 let threads   = loadJSON('threads.json');
+let brownie   = loadJSON('brownie.json');
 
 // ── Config ────────────────────────────────────────────────────
 const FORUM_ID         = '1466105963621777572';
@@ -361,7 +362,7 @@ async function handleInteraction(d) {
         "",
         "\u2192 Click **Open Shop** to create your listing thread.",
         "\u2192 Click **List Item** inside your thread to add items.",
-        " ",
+        "",
         "**Requirements:**",
         "- Item photos must include a handwritten note with your username, server name, and today's date",
         "- One shop per **14 days** \u2014 opening a new shop closes your previous one",
@@ -372,59 +373,46 @@ async function handleInteraction(d) {
         description: "Ready to sell, trade, or barter?\n\n→ Click **Open Shop** to create your listing thread.\n→ Click **List Item** inside your thread to add items.",
         fields: [
           {
-            name: "**Listing Requirements**",
+            name: "Requirements",
             value: "- Item photos must include a handwritten note with your username, server name, and today's date\n- One shop per **14 days** — opening a new shop closes your previous one",
             inline: false,
           },
-           {
-            name: " ",
-            value: " ",
+          {
+            name: "Price Caps",
+            value: "\u200b",
             inline: false,
           },
           {
-            name: "Price Markup Limits",
-            value: " ",
-            inline: false,
-          },
-          {
-            name: "Current\nStandard Items",
-            value: "+$10   if $1-$49 Retail\n+$15   if $50-$99 Retail\n+$20   if $100+ Retail",
+            name: "Current Releases",
+            value: "**Standard Items**\n**Secrets**\n**Exclusives**",
             inline: true,
           },
           {
-            name: "Retired\nStandard Items",
-            value: "+$20   if $1-$49 Retail\n+$30   if $50-$99 Retail\n+$40   if $100+ Retail",
-            inline: true,
-          },  
-          {
-            name: " ",
-            value: " ",
-            inline: false,
-          },
-          {
-            name: "Secrets & Exclusives",
-            value: "*Market value*",
-            inline: true,
-          },
-          {
-            name: "Secrets & Exclusives",
-            value: "*Market value*",
+            name: "Retired Items",
+            value: "**Standard Items**\n**Secrets**\n**Exclusives**",
             inline: true,
           },
         ],
       };
 
       const result = await rest('POST', `/channels/${FORUM_ID}/threads`, {
-        name: 'Open Shop',
+        name: '📋 Open a Shop',
         message: {
           embeds: [panelEmbed],
           components: [{
             type: 1,
-            components: [{
-              type: 2, style: 2,
-              label: 'Open Shop',
-              custom_id: 'create_marketplace_listing',
-            }],
+            components: [
+              {
+                type: 2, style: 2,
+                label: 'Open Shop',
+                custom_id: 'create_marketplace_listing',
+              },
+              {
+                type: 2, style: 2,
+                label: 'Give Brownie Points',
+                custom_id: 'rep_button',
+              },
+            ],
           }],
         },
       });
@@ -544,6 +532,48 @@ async function handleInteraction(d) {
         condition,
         notes,
         photoUrls,
+      });
+    }
+
+    // ── "Give Brownie Points" button ──────────────────────────
+    if (type === 3 && data.custom_id === 'rep_button') {
+      return respond(id, token, 4, {
+        flags: 64,
+        content: '**Give Brownie Points**\nSelect a user from the dropdown below:',
+        components: [{
+          type: 1,
+          components: [{
+            type: 5, // User Select
+            custom_id: 'rep_user_select',
+            placeholder: 'Select a user to give brownie points',
+            min_values: 1,
+            max_values: 1,
+          }],
+        }],
+      });
+    }
+
+    // ── User Select: award brownie point ───────────────────────
+    if (type === 3 && data.custom_id === 'rep_user_select') {
+      const targetId = data.values?.[0];
+      if (!targetId) return;
+
+      if (targetId === userId) {
+        return respond(id, token, 7, {
+          content: '❌ You cannot give brownie points to yourself!',
+          components: [],
+        });
+      }
+
+      if (!brownie[targetId]) brownie[targetId] = 0;
+      brownie[targetId] += 1;
+      saveJSON('brownie.json', brownie);
+
+      const total = brownie[targetId];
+      return respond(id, token, 7, {
+        content: `✅ <@${userId}> gave 1 brownie point to <@${targetId}>!
+**Total brownie points:** ${total}`,
+        components: [],
       });
     }
 
