@@ -394,7 +394,7 @@ async function handleInteraction(d) {
           {
             name: "Standard Items",
             value: "+$10   if $1-$49 Retail\n+$15   if $50-$99 Retail\n+$20   if $100+ Retail",
-            inline: true,
+            inline: false,
           },
           {
             name: "Standard Items",
