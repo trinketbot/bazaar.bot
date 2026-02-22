@@ -362,7 +362,7 @@ async function handleInteraction(d) {
         "",
         "\u2192 Click **Open Shop** to create your listing thread.",
         "\u2192 Click **List Item** inside your thread to add items.",
-        " ",
+        "",
         "**Requirements:**",
         "- Item photos must include a handwritten note with your username, server name, and today's date",
         "- One shop per **14 days** \u2014 opening a new shop closes your previous one",
@@ -410,21 +410,20 @@ async function handleInteraction(d) {
           {
             name: "Secrets & Exclusives",
             value: "*Market value*",
-            inline: true
+            inline: true,
           },
         ],
-      };  
-      ].join("\n");
-      const panelEmbed = {
+      };
+
+      const brownieEmbed = {
         color: COLOR,
-        title: "Successfully completed a transaction?",
-        description: "Give that user a brownie point!"
+        description: 'Successfully completed a transaction?\nGive that user a brownie point!',
       };
 
       const result = await rest('POST', `/channels/${FORUM_ID}/threads`, {
         name: 'Welcome to the Bazaar!',
         message: {
-          embeds: [panelEmbed],
+          embeds: [panelEmbed, brownieEmbed],
           components: [{
             type: 1,
             components: [
