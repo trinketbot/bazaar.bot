@@ -619,7 +619,7 @@ async function registerCommands(appId) {
         default_member_permissions: '32',
       },
       {
-        name: 'setup_ISO',
+        name: 'setup_iso',
         description: 'Post the ISO panel',
         default_member_permissions: '32',
       },
