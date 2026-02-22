@@ -389,7 +389,7 @@ async function handleInteraction(d) {
           {
             name: "Retired Items",
             value: "\u200B",
-            inline: false,
+            inline: true,
           },
           {
             name: "Standard Items",
