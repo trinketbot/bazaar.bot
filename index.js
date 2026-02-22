@@ -354,30 +354,42 @@ async function handleInteraction(d) {
       const isAdmin = roles.includes(ADMIN_ROLE_ID) || roles.includes(BOT_ROLE_ID) || (perms & 8n) === 8n;
       if (!isAdmin) return replyEphemeral(id, token, "❌ You don't have permission.");
 
-      const panelEmbed = {
-        title: 'Haus of Trinkets Marketplace',
-        description:
-          'Ready to sell, trade, or barter?\n\n' +
-          '**→ Click Open Shop** to create your listing thread.\n' +
-          '**→ Click List Item** inside your thread to add items.\n\n' +
-          '**Requirements:**\n' +
-          '- Item photos must include a handwritten note with your username, server name, and today\'s date\n' +
-          '- One shop per **14 days** — opening a new shop closes your previous one',
-        color: COLOR,
-      };
+      // Create a forum thread in the marketplace forum containing the panel
+      const panelContent = [
+        '## Haus of Trinkets Marketplace',
+        'Ready to sell, trade, or barter?',
+        '',
+        '→ Click **Open Shop** to create your listing thread.',
+        '→ Click **List Item** inside your thread to add items.',
+        '',
+        '**Requirements:**',
+        '- Item photos must include a handwritten note with your username, server name, and today's date',
+        '- One shop per **14 days** — opening a new shop closes your previous one',
+      ].join('
+');
 
-      await rest('POST', `/channels/${PANEL_CHANNEL_ID}/messages`, {
-        embeds: [panelEmbed],
-        components: [{
-          type: 1,
+      const result = await rest('POST', `/channels/${FORUM_ID}/threads`, {
+        name: '📋 Open a Shop',
+        message: {
+          content: panelContent,
           components: [{
-            type: 2, style: 2,
-            label: 'Open Shop',
-            custom_id: 'create_marketplace_listing',
+            type: 1,
+            components: [{
+              type: 2, style: 2,
+              label: 'Open Shop',
+              custom_id: 'create_marketplace_listing',
+            }],
           }],
-        }],
+        },
       });
-      return replyEphemeral(id, token, `✅ Marketplace panel posted in <#${PANEL_CHANNEL_ID}>!`);
+
+      if (result.id) {
+        // Pin the thread so it stays at the top
+        await rest('PUT', `/channels/${result.id}/pins/${result.id}`).catch(() => {});
+        return replyEphemeral(id, token, `✅ Marketplace panel created: <#${result.id}>`);
+      } else {
+        return replyEphemeral(id, token, '❌ Failed to create panel thread.');
+      }
     }
 
     // ── "Open Shop" button ─────────────────────────────────────
