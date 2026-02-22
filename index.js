@@ -397,7 +397,7 @@ async function handleInteraction(d) {
             inline: true,
           },  
           {
-            name: "\u200B",
+            name: " ",
             value: " ",
             inline: false,
           },
