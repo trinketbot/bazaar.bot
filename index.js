@@ -60,7 +60,13 @@ function rest(method, path, body) {
       let raw = '';
       res.on('data', c => raw += c);
       res.on('end', () => {
-        try { resolve(raw ? JSON.parse(raw) : {}); }
+        try {
+          const parsed = raw ? JSON.parse(raw) : {};
+          if (res.statusCode >= 400) {
+            console.error(`REST ${method} ${path} -> ${res.statusCode}:`, JSON.stringify(parsed));
+          }
+          resolve(parsed);
+        }
         catch { resolve({}); }
       });
     });
