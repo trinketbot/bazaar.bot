@@ -387,7 +387,7 @@ async function handleInteraction(d) {
           },
           {
             name: "Secrets & Exclusives",
-            value: "*Market value*".
+            value: "*Market value*",
             inline: true,
           },
           {
@@ -397,7 +397,7 @@ async function handleInteraction(d) {
           },
           {
             name: "Secrets & Exclusives",
-            value: "*Market value*".
+            value: "*Market value*",
             inline: true,
           },
         ],
