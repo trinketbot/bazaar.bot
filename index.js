@@ -363,7 +363,7 @@ async function handleInteraction(d) {
         '→ Click **List Item** inside your thread to add items.',
         '',
         '**Requirements:**',
-        '- Item photos must include a handwritten note with your username, server name, and today's date',
+        '- Item photos must include a handwritten note with your username, server name, and the date',
         '- One shop per **14 days** — opening a new shop closes your previous one',
       ].join('
 ');
