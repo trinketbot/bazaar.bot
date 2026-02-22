@@ -403,12 +403,7 @@ async function handleInteraction(d) {
             inline: false,
           },
           {
-            name: "Current\nSecrets & Exclusives",
-            value: "*Market value*",
-            inline: true,
-          },
-          {
-            name: "Retired\nSecrets & Exclusives",
+            name: "Secrets & Exclusives",
             value: "*Market value*",
             inline: true,
           },
@@ -418,7 +413,7 @@ async function handleInteraction(d) {
             inline: false,
           },
         ],
-        image: { url: ' '},
+        image: { url: 'https://discord.com/channels/1465012343531376795/1470967536584626187/1475237912525275236'},
         footer: { text: 'Successfully completed a transaction? Give that user a brownie point!' },
       };
 
@@ -626,46 +621,143 @@ async function registerCommands(appId) {
 
 // ── Gateway ───────────────────────────────────────────────────
 let heartbeatInterval = null;
-let resumeUrl = null;
-let sequence  = null;
-let ws        = null;
+let resumeGatewayUrl  = null;
+let sessionId         = null;
+let sequence          = null;
+let ws                = null;
+let reconnectTimeout  = null;
+let reconnectDelay    = 1000;   // starts at 1s, backs off to 30s max
+let isConnecting      = false;  // guard against parallel connects
 
-function connect(url = GATEWAY) {
+function scheduleReconnect(useResume = true) {
+  if (reconnectTimeout) return; // already scheduled
+  console.log(`Reconnecting in ${reconnectDelay / 1000}s…`);
+  reconnectTimeout = setTimeout(() => {
+    reconnectTimeout = null;
+    connect(useResume && resumeGatewayUrl ? resumeGatewayUrl : GATEWAY, useResume);
+  }, reconnectDelay);
+  // Exponential backoff capped at 30s
+  reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+}
+
+function connect(url = GATEWAY, tryResume = false) {
+  if (isConnecting) return;
+  isConnecting = true;
+
+  // Clean up any existing socket first
+  if (ws) {
+    ws.removeAllListeners();
+    try { ws.close(); } catch {}
+    ws = null;
+  }
+  clearInterval(heartbeatInterval);
+  heartbeatInterval = null;
+
   ws = new WebSocket(url);
 
-  ws.on('message', async raw => {
-    const { op, d, s, t } = JSON.parse(raw);
-    if (s) sequence = s;
+  ws.on('open', () => {
+    isConnecting = false;
+    reconnectDelay = 1000; // reset backoff on successful connection
+  });
 
+  ws.on('message', async raw => {
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+    const { op, d, s, t } = msg;
+    if (s != null) sequence = s;
+
+    // op 10 — Hello (start heartbeat + identify or resume)
     if (op === 10) {
-      heartbeatInterval = setInterval(() => ws.send(JSON.stringify({ op: 1, d: sequence })), d.heartbeat_interval);
-      ws.send(JSON.stringify({ op: 2, d: { token: TOKEN, intents: 1, properties: { os: 'linux', browser: 'bot', device: 'bot' } } }));
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = setInterval(() => {
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ op: 1, d: sequence }));
+        }
+      }, d.heartbeat_interval);
+
+      if (tryResume && sessionId && sequence) {
+        // Resume existing session instead of re-identifying
+        ws.send(JSON.stringify({
+          op: 6,
+          d: { token: TOKEN, session_id: sessionId, seq: sequence },
+        }));
+      } else {
+        // Fresh identify
+        ws.send(JSON.stringify({
+          op: 2,
+          d: { token: TOKEN, intents: 1, properties: { os: 'linux', browser: 'bot', device: 'bot' } },
+        }));
+      }
     }
-    if (op === 7) { ws.close(); connect(resumeUrl || GATEWAY); }
-    if (op === 9) { setTimeout(() => connect(GATEWAY), 5000); }
+
+    // op 1 — Heartbeat request (respond immediately)
+    if (op === 1) {
+      ws.send(JSON.stringify({ op: 1, d: sequence }));
+    }
+
+    // op 7 — Reconnect requested by Discord
+    if (op === 7) {
+      console.log('Discord requested reconnect (op 7)');
+      ws.close(4000); // triggers 'close' handler below
+    }
+
+    // op 9 — Invalid session
+    if (op === 9) {
+      const resumable = d === true;
+      console.log(`Invalid session (resumable: ${resumable})`);
+      if (!resumable) { sessionId = null; sequence = null; }
+      ws.close(4000);
+    }
+
+    // op 11 — Heartbeat ACK (could add health monitoring here)
 
     if (op === 0) {
       if (t === 'READY') {
-        resumeUrl = d.resume_gateway_url;
-        console.log(`Marketplace bot ready — logged in as ${d.user.username}#${d.user.discriminator}`);
+        sessionId        = d.session_id;
+        resumeGatewayUrl = d.resume_gateway_url;
+        reconnectDelay   = 1000;
+        console.log(`Marketplace bot ready — ${d.user.username}#${d.user.discriminator}`);
         await registerCommands(d.application.id);
       }
+
+      if (t === 'RESUMED') {
+        console.log('Session resumed successfully.');
+        reconnectDelay = 1000;
+      }
+
       if (t === 'INTERACTION_CREATE') {
         const t0 = Date.now();
-        console.log('INTERACTION received:', JSON.stringify({ type: d.type, custom_id: d.data?.custom_id ?? d.data?.name }));
+        console.log('INTERACTION:', JSON.stringify({ type: d.type, custom_id: d.data?.custom_id ?? d.data?.name }));
         await handleInteraction(d);
-        console.log(`INTERACTION handled in ${Date.now() - t0}ms`);
+        console.log(`Handled in ${Date.now() - t0}ms`);
       }
     }
   });
 
   ws.on('close', (code) => {
+    isConnecting = false;
     clearInterval(heartbeatInterval);
-    console.log(`WebSocket closed (${code}). Reconnecting in 5s…`);
-    setTimeout(() => connect(resumeUrl || GATEWAY), 5000);
+    heartbeatInterval = null;
+    ws = null;
+    console.log(`WebSocket closed (${code}).`);
+
+    // 4004 = bad token, 4010/4011/4012/4013/4014 = unrecoverable
+    const unrecoverable = [4004, 4010, 4011, 4012, 4013, 4014];
+    if (unrecoverable.includes(code)) {
+      console.error(`Unrecoverable close code ${code}. Not reconnecting.`);
+      return;
+    }
+
+    // Don't resume on clean closes or invalid session
+    const shouldResume = code !== 1000 && code !== 4009 && sessionId != null;
+    scheduleReconnect(shouldResume);
   });
 
-  ws.on('error', err => console.error('WebSocket error:', err.message));
+  ws.on('error', err => {
+    isConnecting = false;
+    console.error('WebSocket error:', err.message);
+    // 'close' will fire after 'error', so reconnect is handled there
+  });
 }
 
 connect();
