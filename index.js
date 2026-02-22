@@ -390,7 +390,7 @@ async function handleInteraction(d) {
       };
 
       const result = await rest('POST', `/channels/${FORUM_ID}/threads`, {
-        name: 'Open a Shop',
+        name: 'Open Shop',
         message: {
           embeds: [panelEmbed],
           components: [{
