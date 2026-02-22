@@ -28,3 +28,8 @@ jobs:
         env:
           MARKETPLACE_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
         run: node index.js
+        
+      - name: Run iso bot
+        env:
+          MARKETPLACE_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
+        run: node iso.js
