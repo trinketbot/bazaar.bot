@@ -393,7 +393,7 @@ async function handleInteraction(d) {
           },
           {
             name: "Retired\nStandard Items",
-            value: "+$20   if $1-$49 Retail\n+$30   if $50-$99 Retail\n+$40   if $100+ Retail*",
+            value: "+$20   if $1-$49 Retail\n+$30   if $50-$99 Retail\n+$40   if $100+ Retail",
             inline: true,
           },  
           {
