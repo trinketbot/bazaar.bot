@@ -377,14 +377,19 @@ async function handleInteraction(d) {
             inline: false,
           },
           {
-            name: "Current Release Caps",
-            value: " ",
+            name: "Price Markup Limits",
+            value: "\u200B",
+            inline: false,
+          },
+           {
+            name: "Current Item Caps",
+            value: "\u200B",
             inline: true,
           },
           {
             name: "Retired Item Caps",
-            value: " ",
-            inline: true,
+            value: "\u200B",
+            inline: false,
           },
           {
             name: "Standard Items",
@@ -395,6 +400,11 @@ async function handleInteraction(d) {
             name: "Standard Items",
             value: "+$20   if $1-$49 Retail\n+$30   if $50-$99 Retail\n+$40   if $100+ Retail*",
             inline: true,
+          },  
+          {
+            name: "\u200B",
+            value: " ",
+            inline: false,
           },
           {
             name: "Secrets & Exclusives",
