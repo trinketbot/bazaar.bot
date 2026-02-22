@@ -87,7 +87,7 @@ function labelId() { return _labelId++; }
 
 function textInput(customId, label, placeholder, paragraph = false, required = true, maxLength = 200) {
   return {
-    type: 24,
+    type: 18,
     id: labelId(),
     label,
     component: {
@@ -103,7 +103,7 @@ function textInput(customId, label, placeholder, paragraph = false, required = t
 
 function selectMenu(customId, label, description, options, minValues = 1, maxValues = 1, required = true) {
   return {
-    type: 24,
+    type: 18,
     id: labelId(),
     label,
     description,
@@ -120,7 +120,7 @@ function selectMenu(customId, label, description, options, minValues = 1, maxVal
 
 function fileUpload(customId, label, description, minValues = 1, maxValues = 10, required = true) {
   return {
-    type: 24,
+    type: 18,
     id: labelId(),
     label,
     description,
