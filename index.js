@@ -10,6 +10,10 @@ const WebSocket = require('ws');
 const https     = require('https');
 const fs        = require('fs');
 
+// Keep-alive agent so every REST call reuses the same TCP connection
+// instead of doing a fresh TLS handshake each time.
+const httpsAgent = new https.Agent({ keepAlive: true });
+
 const TOKEN   = process.env.MARKETPLACE_TOKEN;
 const API     = 'https://discord.com/api/v10';
 const GATEWAY = 'wss://gateway.discord.gg/?v=10&encoding=json';
@@ -45,6 +49,7 @@ function rest(method, path, body) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
     const req  = https.request(`${API}${path}`, {
+      agent: httpsAgent,
       method,
       headers: {
         'Authorization': `Bot ${TOKEN}`,
@@ -534,8 +539,10 @@ function connect(url = GATEWAY) {
       }
 
       if (t === "INTERACTION_CREATE") {
+        const _t0 = Date.now();
         console.log("INTERACTION received:", JSON.stringify({ type: d.type, custom_id: d.data?.custom_id ?? d.data?.name }));
         await handleInteraction(d);
+        console.log(`INTERACTION handled in ${Date.now() - _t0}ms`);
       }
     }
   });
