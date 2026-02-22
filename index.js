@@ -372,32 +372,27 @@ async function handleInteraction(d) {
         description: "Ready to sell, trade, or barter?\n\n→ Click **Open Shop** to create your listing thread.\n→ Click **List Item** inside your thread to add items.",
         fields: [
           {
-            name: "**Requirements**",
+            name: "**Listing Requirements**",
             value: "- Item photos must include a handwritten note with your username, server name, and today's date\n- One shop per **14 days** — opening a new shop closes your previous one",
             inline: false,
           },
           {
-            name: "Price Markup Limits",
-            value: "\u200B",
-            inline: false,
-          },
-           {
-            name: "Current Items",
+            name: "\u200B",
             value: " ",
-            inline: true,
-          },
-          {
-            name: "Retired Items",
-            value: "\u200B",
-            inline: true,
-          },
-          {
-            name: "Standard Items",
-            value: "+$10   if $1-$49 Retail\n+$15   if $50-$99 Retail\n+$20   if $100+ Retail",
             inline: false,
           },
           {
-            name: "Standard Items",
+            name: "Price Markup Limits",
+            value: " ",
+            inline: false,
+          },
+          {
+            name: "Current\nStandard Items",
+            value: "+$10   if $1-$49 Retail\n+$15   if $50-$99 Retail\n+$20   if $100+ Retail",
+            inline: true,
+          },
+          {
+            name: "Retired\nStandard Items",
             value: "+$20   if $1-$49 Retail\n+$30   if $50-$99 Retail\n+$40   if $100+ Retail*",
             inline: true,
           },  
