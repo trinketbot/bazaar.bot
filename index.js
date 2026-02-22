@@ -97,23 +97,23 @@ function label(id, labelText, description, innerComponent) {
   return { type: 18, id, label: labelText.slice(0, 45), description: description?.slice(0, 100), component: innerComponent };
 }
 function textInput(id, placeholder, paragraph = false, required = true, maxLength = 200) {
-  return { type: 4, id, style: paragraph ? 2 : 1, placeholder, required, max_length: maxLength };
+  return { type: 4, custom_id: String(id), style: paragraph ? 2 : 1, placeholder, required, max_length: maxLength };
 }
 function stringSelect(id, placeholder, options, minValues, maxValues, required = true) {
-  return { type: 3, id, placeholder, options, min_values: minValues, max_values: maxValues, required };
+  return { type: 3, custom_id: String(id), placeholder, options, min_values: minValues, max_values: maxValues, required };
 }
 function fileUpload(id, minValues, maxValues, required = true) {
-  return { type: 19, id, min_values: minValues, max_values: maxValues, required };
+  return { type: 19, custom_id: String(id), min_values: minValues, max_values: maxValues, required };
 }
 
 // ── Checkbox / Radio builders ─────────────────────────────────
 // type 22 = Checkbox Group (multi-select, returns values[])
 // type 21 = Radio Group    (single-select, returns value)
 function checkboxGroup(id, options, minValues, maxValues, required = true) {
-  return { type: 22, id, options, min_values: minValues, max_values: maxValues, required };
+  return { type: 22, id, custom_id: `cb_${id}`, options, min_values: minValues, max_values: maxValues, required };
 }
 function radioGroup(id, options, required = true) {
-  return { type: 21, id, options, required };
+  return { type: 21, id, custom_id: `rb_${id}`, options, required };
 }
 
 // ── Option sets ───────────────────────────────────────────────
