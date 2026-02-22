@@ -2,7 +2,7 @@
 // TrinketBot — ISO Module
 // Plug-in alongside marketplace.js  OR  merge into it.
 //
-// New slash command : /setup_ISO
+// New slash command : /setup_iso
 // Buttons           : add_iso_item | remove_iso_item | edit_iso_item
 // Modal             : mp_iso_submit | mp_iso_remove | mp_iso_edit
 //
@@ -493,8 +493,8 @@ async function handleIsoInteraction(d) {
     ? `https://cdn.discordapp.com/avatars/${userId}/${avatarHash}.png`
     : `https://cdn.discordapp.com/embed/avatars/0.png`;
 
-  // ── /setup_ISO ─────────────────────────────────────────────
-  if (type === 2 && data.name === 'setup_ISO') {
+  // ── /setup_iso ─────────────────────────────────────────────
+  if (type === 2 && data.name === 'setup_iso') {
     const roles  = member?.roles || [];
     const perms  = BigInt(member?.permissions || '0');
     const isAdmin = roles.includes(ADMIN_ROLE_ID) || roles.includes(BOT_ROLE_ID) || (perms & 8n) === 8n;
