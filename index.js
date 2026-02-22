@@ -220,12 +220,17 @@ function buildListItemModal() {
 }
 
 // ── Extract fields from modal submit ─────────────────────────
-function getFields(components) {
+function getFields(components, resolved) {
   const fields = {};
   function walk(comps) {
     for (const c of comps || []) {
       if (c.type === 18 && c.component?.custom_id) {
-        fields[c.component.custom_id] = c.component;
+        const comp = c.component;
+        // Resolve file upload attachment IDs to CDN URLs
+        if (comp.type === 19 && comp.values && resolved?.attachments) {
+          comp.files = comp.values.map(id => resolved.attachments[id]).filter(Boolean);
+        }
+        fields[comp.custom_id] = comp;
       }
       if (c.components) walk(c.components);
     }
@@ -402,7 +407,7 @@ async function handleInteraction(d) {
 
     // ── Modal: Open Shop submitted ─────────────────────────────
     if (type === 5 && data.custom_id === 'mp_open_shop') {
-      const fields = getFields(data.components);
+      const fields = getFields(data.components, data.resolved);
 
       let transactionVals = [], paymentVals = [], shippingVal = '', tagVals = [], notes = '';
 
@@ -440,9 +445,7 @@ async function handleInteraction(d) {
 
     // ── Modal: List Item submitted ─────────────────────────────
     if (type === 5 && data.custom_id === 'mp_list_item') {
-      console.log('LIST ITEM raw components:', JSON.stringify(data.components, null, 2));
-      const fields = getFields(data.components);
-      console.log('LIST ITEM fields:', JSON.stringify(fields, null, 2));
+      const fields = getFields(data.components, data.resolved);
 
       let name = '', price = '', condition = '', notes = '', photoUrls = [];
 
