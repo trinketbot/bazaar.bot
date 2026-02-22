@@ -361,8 +361,6 @@ async function handleInteraction(d) {
         "",
         "\u2192 Click **Open Shop** to create your listing thread.",
         "\u2192 Click **List Item** inside your thread to add items.",
-        "\u2192",
-        "\u2192",
         " ",
         "**Requirements:**",
         "- Item photos must include a handwritten note with your username, server name, and today's date",
