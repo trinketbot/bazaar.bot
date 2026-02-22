@@ -388,7 +388,7 @@ async function handleInteraction(d) {
           },
           {
             name: "Retired Items",
-            value: " ",
+            value: "\u200B",
             inline: false,
           },
           {
