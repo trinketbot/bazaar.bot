@@ -403,12 +403,12 @@ async function handleInteraction(d) {
             inline: false,
           },
           {
-            name: "Secrets & Exclusives",
+            name: "Current\nSecrets & Exclusives",
             value: "*Market value*",
             inline: true,
           },
           {
-            name: "Secrets & Exclusives",
+            name: "Retired\nSecrets & Exclusives",
             value: "*Market value*",
             inline: true,
           },
@@ -418,6 +418,7 @@ async function handleInteraction(d) {
             inline: false,
           },
         ],
+        image: { url: ' '},
         footer: { text: 'Successfully completed a transaction? Give that user a brownie point!' },
       };
 
