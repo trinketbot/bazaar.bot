@@ -413,7 +413,7 @@ async function handleInteraction(d) {
             inline: false,
           },
         ],
-        image: { url: 'https://discord.com/channels/1465012343531376795/1470967536584626187/1475237912525275236'},
+        image: { url: 'https://i.postimg.cc/nLWwfYWs/trinketbot-house-of-trinkets-22926.png'},
         footer: { text: 'Successfully completed a transaction? Give that user a brownie point!' },
       };
 
