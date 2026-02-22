@@ -23,6 +23,8 @@ const GATEWAY = 'wss://gateway.discord.gg/?v=10&encoding=json';
 
 const httpsAgent = new https.Agent({ keepAlive: true });
 
+const { handleIsoInteraction, registerIsoCommand, schedulePendingBumps } = require('./iso');
+
 // ── Storage ───────────────────────────────────────────────────
 function loadJSON(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
@@ -338,6 +340,8 @@ async function postItem(iid, token, userId, username, avatarUrl, state) {
 
 // ── Interaction handler ───────────────────────────────────────
 async function handleInteraction(d) {
+  const handled = await handleIsoInteraction(d);
+  if (handled !== false) return;
   const { id, token, type, data, member, guild_id } = d;
   const userId     = member?.user?.id || d.user?.id;
   const username   = member?.user?.username || d.user?.username;
@@ -608,11 +612,18 @@ async function handleInteraction(d) {
 // ── Register slash command ────────────────────────────────────
 async function registerCommands(appId) {
   try {
-    await rest('PUT', `/applications/${appId}/commands`, [{
-      name: 'setup_market',
-      description: 'Post the marketplace panel',
-      default_member_permissions: '32',
-    }]);
+    await rest('PUT', `/applications/${appId}/commands`, [
+      {
+        name: 'setup_market',
+        description: 'Post the marketplace panel',
+        default_member_permissions: '32',
+      },
+      {
+        name: 'setup_ISO',
+        description: 'Post the ISO panel',
+        default_member_permissions: '32',
+      },
+    ]);
     console.log('Slash commands registered.');
   } catch (e) {
     console.error('Command registration failed:', e.message);
@@ -718,6 +729,7 @@ function connect(url = GATEWAY, tryResume = false) {
         reconnectDelay   = 1000;
         console.log(`Marketplace bot ready — ${d.user.username}#${d.user.discriminator}`);
         await registerCommands(d.application.id);
+        await schedulePendingBumps(); 
       }
 
       if (t === 'RESUMED') {
