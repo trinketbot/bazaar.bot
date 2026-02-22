@@ -381,6 +381,11 @@ async function handleInteraction(d) {
             value: " ",
             inline: false,
           },
+           {
+            name: "\u200B",
+            value: " ",
+            inline: false,
+          },
           {
             name: "Price Markup Limits",
             value: " ",
