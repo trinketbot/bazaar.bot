@@ -1,20 +1,17 @@
-// ============================================================ 
+// ============================================================
 // TrinketBot — ISO Module
-// Plug-in alongside marketplace.js  OR  merge into it.
 //
-// New slash command : /setup_iso
-// Buttons           : add_iso_item | remove_iso_item | edit_iso_item
-// Modal             : mp_iso_submit | mp_iso_remove | mp_iso_edit
+// Slash command : /setup_iso
+// Buttons       : add_iso_item | remove_iso_item | edit_iso_item
+// Modals        : mp_iso_submit | mp_iso_edit_[threadId]
 //
-// Storage files:
-//   iso_listings.json  — { userId: { threadId: { messageId, items:[{id,…}] } } }
-//   iso_bumps.json     — { userId_threadId: isoDate }   (last posted/bumped)
+// Storage:
+//   iso_listings.json — { userId: { threadId: { messageId, content, photoUrls, ts } } }
 // ============================================================
 
 const https = require('https');
 const fs    = require('fs');
 
-// ── Re-use or duplicate from marketplace.js ───────────────────
 const TOKEN = process.env.MARKETPLACE_TOKEN;
 const API   = 'https://discord.com/api/v10';
 
@@ -25,20 +22,14 @@ function loadJSON(file) {
 }
 function saveJSON(file, data) { fs.writeFileSync(file, JSON.stringify(data, null, 2)); }
 
-// ── ISO-specific storage ──────────────────────────────────────
-// isoListings[userId][threadId] = { messageId: string, items: [{ id, name, budget, condition, notes, ts }] }
-// isoBumps[`${userId}_${threadId}`] = ISO date string of last post/bump
 let isoListings = loadJSON('iso_listings.json');
-let isoBumps    = loadJSON('iso_bumps.json');
 
-// ── Config ────────────────────────────────────────────────────
 const ISO_FORUM_ID     = '1466146126330597591';
 const ADMIN_ROLE_ID    = '1465161088814289089';
 const BOT_ROLE_ID      = '1465163793934848194';
 const COLOR            = 0xe0ad76;
-const BUMP_DAYS        = 14;
+const BUMP_COOLDOWN_MS = 72 * 60 * 60 * 1000;
 
-// IP thread IDs → we'll resolve their names from the API
 const IPTHREAD_IDS = [
   '1466683002028560498', '1466982282106769451', '1466706222693482597',
   '1466700846166310945', '1466699623082102872', '1466698761844687062',
@@ -46,20 +37,7 @@ const IPTHREAD_IDS = [
   '1466690531840102440', '1466688832471826569', '1466686206116102429',
 ];
 
-const CONDITION_OPTS = [
-  { label: 'Boxed — sealed',      value: 'Boxed — sealed'      },
-  { label: 'Boxed — top open',    value: 'Boxed — top open'    },
-  { label: 'Boxed — bottom open', value: 'Boxed — bottom open' },
-  { label: 'Boxed — fully open',  value: 'Boxed — fully open'  },
-  { label: 'Boxed — no box',      value: 'Boxed — no box'      },
-  { label: 'Tagged — NWT',        value: 'Tagged — NWT'        },
-  { label: 'Tagged — NWRT',       value: 'Tagged — NWRT'       },
-  { label: 'Tagged — NWOT',       value: 'Tagged — NWOT'       },
-  { label: 'Pre-loved',           value: 'Pre-loved'           },
-  { label: 'Other',               value: 'Other'               },
-];
-
-// ── REST helper (self-contained copy) ─────────────────────────
+// ── REST ──────────────────────────────────────────────────────
 function rest(method, path, body) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
@@ -92,401 +70,209 @@ function rest(method, path, body) {
 function respond(id, token, type, data) {
   return rest('POST', `/interactions/${id}/${token}/callback`, { type, data });
 }
-function showModal(id, token, modal)         { return respond(id, token, 9, modal); }
-function replyEphemeral(id, token, content)  { return respond(id, token, 4, { content, flags: 64 }); }
-function updateEphemeral(id, token, content, components = []) {
-  return respond(id, token, 7, { content, components, flags: 64 });
+function showModal(id, token, modal)        { return respond(id, token, 9, modal); }
+function replyEphemeral(id, token, content) { return respond(id, token, 4, { content, flags: 64 }); }
+
+// ── Label wrapper (type 18) — same pattern as index.js ───────
+let _lid = 100; // start high to avoid collision with index.js ids
+function resetIds() { _lid = 100; }
+const nextId = () => _lid++;
+
+function label(id, labelText, description, innerComponent) {
+  return {
+    type: 18, id,
+    label: labelText.slice(0, 45),
+    description: description?.slice(0, 100),
+    component: innerComponent,
+  };
+}
+function textInput(id, placeholder, paragraph = false, required = true, maxLength = 1000) {
+  return { type: 4, custom_id: String(id), style: paragraph ? 2 : 1, placeholder, required, max_length: maxLength };
+}
+function stringSelect(id, placeholder, options, minValues = 1, maxValues = 1) {
+  return { type: 3, custom_id: String(id), placeholder, options, min_values: minValues, max_values: maxValues };
+}
+function fileUpload(id, minValues = 1, maxValues = 5, required = false) {
+  return { type: 19, custom_id: String(id), min_values: minValues, max_values: maxValues, required };
 }
 
-// ── Unique item ID ────────────────────────────────────────────
-function newItemId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
-}
-
-// ── Resolve IP thread names ───────────────────────────────────
+// ── Resolve IP thread names (cached) ─────────────────────────
 let _ipNameCache = null;
 async function getIpOptions() {
   if (_ipNameCache) return _ipNameCache;
   const results = await Promise.all(
-    IPTHREAD_IDS.map(id => rest('GET', `/channels/${id}`).then(ch => ({
-      label: (ch.name || id).slice(0, 100),
-      value: id,
-    })).catch(() => ({ label: id, value: id })))
+    IPTHREAD_IDS.map(id =>
+      rest('GET', `/channels/${id}`)
+        .then(ch => ({ label: (ch.name || id).slice(0, 100), value: id }))
+        .catch(() => ({ label: id, value: id }))
+    )
   );
   _ipNameCache = results;
   return results;
 }
 
-// ── Build the ISO embed for a user's listing ──────────────────
-// items: [{ id, name, budget, condition, notes, ts }]
-function buildIsoEmbed(username, avatarUrl, items) {
-  const fields = [];
-  for (const item of items) {
-    const lines = [
-      `**${item.name}**`,
-      `Budget: $${item.budget}   |   Condition: ${item.condition}`,
-      ...(item.notes ? [`*${item.notes}*`] : []),
-    ];
-    fields.push({ name: `#${item.id}`, value: lines.join('\n'), inline: false });
-  }
+// ── Build ISO embed ───────────────────────────────────────────
+function buildIsoEmbed(username, avatarUrl, content, photoUrls) {
   return {
-    color:     COLOR,
-    author:    { name: `${username}'s ISOs`, icon_url: avatarUrl },
-    fields,
-    footer:    { text: `Use "Edit Items" or "Remove Items" to manage your ISOs` },
-    timestamp: new Date().toISOString(),
+    color:       COLOR,
+    author:      { name: `${username}'s ISOs`, icon_url: avatarUrl },
+    description: content,
+    image:       photoUrls?.[0] ? { url: photoUrls[0] } : undefined,
+    footer:      { text: 'Use "Edit Listing" to update or "Remove Listing" to delete' },
+    timestamp:   new Date().toISOString(),
   };
 }
 
-// ── Post or update user's ISO message in the correct thread ───
-async function upsertIsoListing(iid, token, userId, username, avatarUrl, threadId, newItem) {
+// ── Upsert listing (delete old + repost = bump) ───────────────
+async function upsertIsoListing(iid, token, userId, username, avatarUrl, threadId, content, photoUrls) {
   if (!isoListings[userId]) isoListings[userId] = {};
   const existing = isoListings[userId][threadId];
 
-  let items;
-  if (existing) {
-    items = [...existing.items, newItem];
-  } else {
-    items = [newItem];
-  }
-
-  const embed = buildIsoEmbed(username, avatarUrl, items);
-  const messageBody = { embeds: [embed] };
-
-  if (existing?.messageId) {
-    // Edit existing message
-    await rest('PATCH', `/channels/${threadId}/messages/${existing.messageId}`, messageBody);
-    isoListings[userId][threadId].items = items;
-  } else {
-    // Create new message
-    const msg = await rest('POST', `/channels/${threadId}/messages`, messageBody);
-    if (!msg.id) {
-      return replyEphemeral(iid, token, '❌ Failed to post ISO. Check thread permissions.');
+  if (existing?.ts) {
+    const elapsed = Date.now() - new Date(existing.ts).getTime();
+    if (elapsed < BUMP_COOLDOWN_MS) {
+      const hoursLeft = Math.ceil((BUMP_COOLDOWN_MS - elapsed) / 3600000);
+      return replyEphemeral(iid, token,
+        `❌ You can only bump your listing once every 72 hours.\n` +
+        `Try again in **${hoursLeft} hour${hoursLeft !== 1 ? 's' : ''}**.\n` +
+        `Use **Edit Listing** to update your post without bumping.`
+      );
     }
-    isoListings[userId][threadId] = { messageId: msg.id, items };
+    await rest('DELETE', `/channels/${threadId}/messages/${existing.messageId}`).catch(() => {});
   }
 
-  // Record bump timestamp
-  isoBumps[`${userId}_${threadId}`] = new Date().toISOString();
-  saveJSON('iso_listings.json', isoListings);
-  saveJSON('iso_bumps.json', isoBumps);
+  const embed = buildIsoEmbed(username, avatarUrl, content, photoUrls);
+  const msg   = await rest('POST', `/channels/${threadId}/messages`, { embeds: [embed] });
 
-  await replyEphemeral(iid, token, '✅ Your ISO has been posted!');
-  scheduleBumpReminder(userId, threadId);
+  if (!msg.id) return replyEphemeral(iid, token, '❌ Failed to post ISO. Check bot permissions in that thread.');
+
+  isoListings[userId][threadId] = { messageId: msg.id, content, photoUrls: photoUrls || [], ts: new Date().toISOString() };
+  saveJSON('iso_listings.json', isoListings);
+
+  return replyEphemeral(iid, token, `✅ Your ISO has been posted in <#${threadId}>!`);
 }
 
-// ── Remove item from listing ──────────────────────────────────
-async function removeIsoItem(iid, token, userId, username, avatarUrl, threadId, itemId) {
+// ── Edit listing in place (no bump, no cooldown) ──────────────
+async function editIsoListing(iid, token, userId, username, avatarUrl, threadId, content) {
   const listing = isoListings[userId]?.[threadId];
-  if (!listing) return replyEphemeral(iid, token, '❌ No listing found.');
+  if (!listing) return replyEphemeral(iid, token, '❌ No listing found. Use "Add ISO Item" instead.');
 
-  const before = listing.items.length;
-  listing.items = listing.items.filter(i => i.id !== itemId);
-
-  if (listing.items.length === before)
-    return replyEphemeral(iid, token, '❌ Item not found.');
-
-  if (listing.items.length === 0) {
-    // Delete the message entirely
-    await rest('DELETE', `/channels/${threadId}/messages/${listing.messageId}`);
-    delete isoListings[userId][threadId];
-  } else {
-    const embed = buildIsoEmbed(username, avatarUrl, listing.items);
-    await rest('PATCH', `/channels/${threadId}/messages/${listing.messageId}`, { embeds: [embed] });
-  }
-
-  saveJSON('iso_listings.json', isoListings);
-  await replyEphemeral(iid, token, '✅ Item removed.');
-}
-
-// ── Edit item in listing ──────────────────────────────────────
-async function editIsoItem(iid, token, userId, username, avatarUrl, threadId, itemId, patch) {
-  const listing = isoListings[userId]?.[threadId];
-  if (!listing) return replyEphemeral(iid, token, '❌ No listing found.');
-
-  const item = listing.items.find(i => i.id === itemId);
-  if (!item) return replyEphemeral(iid, token, '❌ Item not found.');
-
-  Object.assign(item, patch);
-  const embed = buildIsoEmbed(username, avatarUrl, listing.items);
+  const embed = buildIsoEmbed(username, avatarUrl, content, listing.photoUrls);
   await rest('PATCH', `/channels/${threadId}/messages/${listing.messageId}`, { embeds: [embed] });
+
+  listing.content = content;
   saveJSON('iso_listings.json', isoListings);
-  await replyEphemeral(iid, token, '✅ Item updated.');
+  return replyEphemeral(iid, token, '✅ Your ISO listing has been updated.');
 }
 
-// ── Bump reminder scheduler ───────────────────────────────────
-// Sends an ephemeral-style DM-channel message to the user after BUMP_DAYS.
-// Since true ephemeral scheduling isn't possible without persistent job storage,
-// we use a lightweight setTimeout and also re-schedule on bot startup via
-// `schedulePendingBumps()`.
-const bumpTimers = {};
-
-function scheduleBumpReminder(userId, threadId) {
-  const key      = `${userId}_${threadId}`;
-  const lastPost = isoBumps[key];
-  if (!lastPost) return;
-
-  const elapsed  = Date.now() - new Date(lastPost).getTime();
-  const delay    = Math.max(0, BUMP_DAYS * 86400000 - elapsed);
-
-  clearTimeout(bumpTimers[key]);
-  bumpTimers[key] = setTimeout(async () => {
-    const listing = isoListings[userId]?.[threadId];
-    if (!listing) return;
-
-    // Create a DM channel with the user and send the bump prompt
-    try {
-      const dm = await rest('POST', '/users/@me/channels', { recipient_id: userId });
-      if (!dm.id) return;
-
-      await rest('POST', `/channels/${dm.id}/messages`, {
-        content: `👋 It's been ${BUMP_DAYS} days since you posted your ISO in <#${threadId}>! Would you like to bump your listing?`,
-        components: [{
-          type: 1,
-          components: [
-            {
-              type: 2, style: 1,
-              label: 'Bump my listing',
-              custom_id: `iso_bump_${userId}_${threadId}`,
-            },
-            {
-              type: 2, style: 4,
-              label: 'No thanks',
-              custom_id: `iso_bump_dismiss_${userId}_${threadId}`,
-            },
-          ],
-        }],
-      });
-    } catch (e) {
-      console.error('Bump DM failed:', e.message);
-    }
-  }, delay);
-}
-
-async function schedulePendingBumps() {
-  for (const [key, ts] of Object.entries(isoBumps)) {
-    const [userId, threadId] = key.split('_');
-    if (userId && threadId) scheduleBumpReminder(userId, threadId);
-  }
-}
-
-// ── Bump action ───────────────────────────────────────────────
-async function bumpListing(iid, token, userId, threadId) {
+// ── Remove listing ────────────────────────────────────────────
+async function removeIsoListing(iid, token, userId, username, avatarUrl, threadId) {
   const listing = isoListings[userId]?.[threadId];
-  if (!listing || !listing.items.length) {
-    return updateEphemeral(iid, token, '❌ No active listing to bump.');
-  }
+  if (!listing) return replyEphemeral(iid, token, '❌ No listing found in that thread.');
 
-  // Get current embed data from the existing message
-  const existing = await rest('GET', `/channels/${threadId}/messages/${listing.messageId}`);
-  const embed    = existing.embeds?.[0];
-  if (!embed) return updateEphemeral(iid, token, '❌ Could not find your listing.');
-
-  // Delete old message and repost
-  await rest('DELETE', `/channels/${threadId}/messages/${listing.messageId}`);
-  const newMsg = await rest('POST', `/channels/${threadId}/messages`, { embeds: [embed] });
-
-  if (!newMsg.id) return updateEphemeral(iid, token, '❌ Failed to bump listing.');
-
-  listing.messageId                  = newMsg.id;
-  isoBumps[`${userId}_${threadId}`]  = new Date().toISOString();
+  await rest('DELETE', `/channels/${threadId}/messages/${listing.messageId}`).catch(() => {});
+  delete isoListings[userId][threadId];
   saveJSON('iso_listings.json', isoListings);
-  saveJSON('iso_bumps.json', isoBumps);
-
-  // Reschedule next bump
-  scheduleBumpReminder(userId, threadId);
-  await updateEphemeral(iid, token, '✅ Your listing has been bumped!');
+  return replyEphemeral(iid, token, `✅ Your ISO listing has been removed.`);
 }
 
 // ── Modals ────────────────────────────────────────────────────
-async function buildAddIsoModal() {
+async function buildAddModal() {
+  resetIds();
   const ipOpts = await getIpOptions();
+
+  const l1 = nextId(), inner1 = nextId();
+  const l2 = nextId(), inner2 = nextId();
+  const l3 = nextId(), inner3 = nextId();
+
   return {
-    title:     'Add ISO Item',
+    title:     'Add ISO',
     custom_id: 'mp_iso_submit',
     components: [
-      // Row 1: IP category select
-      {
-        type: 1,
-        components: [{
-          type: 3,
-          custom_id: 'iso_thread',
-          placeholder: 'Select IP / brand category…',
-          min_values: 1,
-          max_values: 1,
-          options:     ipOpts,
-        }],
-      },
-      // Row 2: Item name
-      {
-        type: 1,
-        components: [{
-          type: 4, custom_id: 'iso_name',
-          label: 'Item Name', style: 1,
-          placeholder: 'e.g. Jellycat Bashful Bunny Medium',
-          required: true, max_length: 200,
-        }],
-      },
-      // Row 3: Max budget
-      {
-        type: 1,
-        components: [{
-          type: 4, custom_id: 'iso_budget',
-          label: 'Max Budget (USD)', style: 1,
-          placeholder: 'e.g. 40.00',
-          required: true, max_length: 20,
-        }],
-      },
-      // Row 4: Condition select
-      {
-        type: 1,
-        components: [{
-          type: 3,
-          custom_id: 'iso_condition',
-          placeholder: 'Select acceptable condition…',
-          min_values: 1,
-          max_values: 1,
-          options:     CONDITION_OPTS,
-        }],
-      },
-      // Row 5: Additional notes (optional paragraph)
-      {
-        type: 1,
-        components: [{
-          type: 4, custom_id: 'iso_notes',
-          label: 'Additional Notes (optional)', style: 2,
-          placeholder: 'Colour variants, size, other requirements…',
-          required: false, max_length: 500,
-        }],
-      },
+      label(l1, 'IP / Brand Category', 'Select the thread for your ISO',
+        stringSelect(inner1, 'Select category…', ipOpts)),
+      label(l2, 'What are you looking for?', 'List items, budgets, conditions',
+        textInput(inner2,
+          'e.g.\nJellycat Bashful Bunny Medium — budget $40, any condition\nSquishmallow Avocado 16" — NWT only, up to $25',
+          true, true, 1000)),
+      label(l3, 'Photos (optional)', 'Upload up to 5 reference photos',
+        fileUpload(inner3, 0, 5, false)),
     ],
   };
 }
 
-async function buildRemoveIsoModal(userId) {
-  // Build options from all active listings
-  const userListings = isoListings[userId] || {};
-  const options = [];
+async function buildEditModal(userId) {
+  resetIds();
+  const userListings  = isoListings[userId] || {};
+  const activeThreads = Object.keys(userListings);
+  if (!activeThreads.length) return null;
 
-  for (const [threadId, listing] of Object.entries(userListings)) {
-    for (const item of listing.items) {
-      options.push({
-        label:       item.name.slice(0, 100),
-        value:       `${threadId}::${item.id}`,
-        description: item.condition.slice(0, 100),
-      });
-    }
-  }
+  const ipOpts = await getIpOptions();
+  const opts   = ipOpts.filter(o => activeThreads.includes(o.value));
 
-  if (!options.length) return null; // Signal: nothing to remove
+  const l1 = nextId(), inner1 = nextId();
+  const l2 = nextId(), inner2 = nextId();
 
+  // Pre-fill content from first active listing — will update based on which thread they pick
+  // Discord doesn't allow dynamic pre-fill based on select, so we use a plain text field
   return {
-    title:     'Remove ISO Item',
-    custom_id: 'mp_iso_remove',
-    components: [{
-      type: 1,
-      components: [{
-        type: 3,
-        custom_id: 'iso_remove_select',
-        placeholder: 'Select item to remove…',
-        min_values: 1,
-        max_values: 1,
-        options: options.slice(0, 25),
-      }],
-    }],
-  };
-}
-
-async function buildEditIsoModal(userId) {
-  const userListings = isoListings[userId] || {};
-  const options = [];
-
-  for (const [threadId, listing] of Object.entries(userListings)) {
-    for (const item of listing.items) {
-      options.push({
-        label:       item.name.slice(0, 100),
-        value:       `${threadId}::${item.id}`,
-        description: item.condition.slice(0, 100),
-      });
-    }
-  }
-
-  if (!options.length) return null;
-
-  // Step 1 modal: pick which item to edit
-  return {
-    title:     'Edit ISO — Select Item',
-    custom_id: 'mp_iso_edit_select',
-    components: [{
-      type: 1,
-      components: [{
-        type: 3,
-        custom_id: 'iso_edit_select',
-        placeholder: 'Select item to edit…',
-        min_values: 1,
-        max_values: 1,
-        options: options.slice(0, 25),
-      }],
-    }],
-  };
-}
-
-function buildEditFieldsModal(threadId, item) {
-  return {
-    title:     'Edit ISO Item',
-    custom_id: `mp_iso_edit_${threadId}::${item.id}`,
+    title:     'Edit ISO Listing',
+    custom_id: 'mp_iso_edit',
     components: [
-      {
-        type: 1,
-        components: [{
-          type: 4, custom_id: 'iso_edit_name',
-          label: 'Item Name', style: 1,
-          value:       item.name,
-          required:    true,
-          max_length:  200,
-          placeholder: 'e.g. Jellycat Bashful Bunny Medium',
-        }],
-      },
-      {
-        type: 1,
-        components: [{
-          type: 4, custom_id: 'iso_edit_budget',
-          label: 'Max Budget (USD)', style: 1,
-          value:       item.budget,
-          required:    true,
-          max_length:  20,
-          placeholder: 'e.g. 40.00',
-        }],
-      },
-      {
-        type: 1,
-        components: [{
-          type: 3,
-          custom_id: 'iso_edit_condition',
-          placeholder: 'Select condition…',
-          min_values: 1, max_values: 1,
-          options: CONDITION_OPTS,
-        }],
-      },
-      {
-        type: 1,
-        components: [{
-          type: 4, custom_id: 'iso_edit_notes',
-          label: 'Additional Notes (optional)', style: 2,
-          value:       item.notes || '',
-          required:    false,
-          max_length:  500,
-          placeholder: 'Colour variants, size, other requirements…',
-        }],
-      },
+      label(l1, 'Select Listing to Edit', 'Choose which IP thread to edit',
+        stringSelect(inner1, 'Select listing…', opts)),
+      label(l2, 'Updated Content', 'Replace your listing with this text',
+        textInput(inner2,
+          'e.g.\nJellycat Bashful Bunny Medium — budget $40\nSquishmallow Avocado 16" — NWT only',
+          true, true, 1000)),
     ],
   };
 }
 
-// ── Main handler (call this from handleInteraction in marketplace.js) ─
+async function buildRemoveModal(userId) {
+  resetIds();
+  const userListings  = isoListings[userId] || {};
+  const activeThreads = Object.keys(userListings);
+  if (!activeThreads.length) return null;
+
+  const ipOpts = await getIpOptions();
+  const opts   = ipOpts.filter(o => activeThreads.includes(o.value));
+
+  const l1 = nextId(), inner1 = nextId();
+
+  return {
+    title:     'Remove ISO Listing',
+    custom_id: 'mp_iso_remove',
+    components: [
+      label(l1, 'Select Listing to Remove', 'This will delete your post in that thread',
+        stringSelect(inner1, 'Select listing…', opts)),
+    ],
+  };
+}
+
+// ── Extract fields from modal submit ─────────────────────────
+function getFields(components, resolved) {
+  const fields = {};
+  function walk(comps) {
+    for (const c of comps || []) {
+      if (c.type === 18 && c.component?.custom_id) {
+        const comp = c.component;
+        if (comp.type === 19 && comp.values && resolved?.attachments) {
+          comp.files = comp.values.map(id => resolved.attachments[id]).filter(Boolean);
+        }
+        fields[comp.custom_id] = comp;
+      }
+      if (c.components) walk(c.components);
+    }
+  }
+  walk(components);
+  return fields;
+}
+
+// ── Main handler ──────────────────────────────────────────────
 async function handleIsoInteraction(d) {
   const { id, token, type, data, member } = d;
-  const userId     = member?.user?.id || d.user?.id;
+  const userId     = member?.user?.id       || d.user?.id;
   const username   = member?.user?.username || d.user?.username;
   const avatarHash = member?.user?.avatar   || d.user?.avatar;
   const avatarUrl  = avatarHash
@@ -495,8 +281,8 @@ async function handleIsoInteraction(d) {
 
   // ── /setup_iso ─────────────────────────────────────────────
   if (type === 2 && data.name === 'setup_iso') {
-    const roles  = member?.roles || [];
-    const perms  = BigInt(member?.permissions || '0');
+    const roles   = member?.roles || [];
+    const perms   = BigInt(member?.permissions || '0');
     const isAdmin = roles.includes(ADMIN_ROLE_ID) || roles.includes(BOT_ROLE_ID) || (perms & 8n) === 8n;
     if (!isAdmin) return replyEphemeral(id, token, "❌ You don't have permission.");
 
@@ -504,20 +290,20 @@ async function handleIsoInteraction(d) {
       color: COLOR,
       title: 'HOT ISOs',
       description: [
-        'HOT ISOs are organised by brand and/or IP. Find the ISO category you\'re looking for and leave a comment — hopefully someone will have that item to sell to you soon!',
+        "HOT ISOs are organised by brand and/or IP. Find the ISO category you're looking for and leave a comment — hopefully someone will have that item to sell to you soon!",
         '',
         'Remember that these channels are meant to be easily navigable lists. Any general conversation about ISOs should be held in ⁠bazaar-banter.',
         '',
         '**Buyer Guidelines**',
-        '• Be specific in what you\'re looking for.',
+        "• Be specific in what you're looking for.",
         '• Include photos when possible.',
         '• Specify price range or any conditions.',
-        '• No chatter — we want this forum to be easily searchable so everyone can find what they\'re looking for!',
+        "• No chatter — we want this forum to be easily searchable so everyone can find what they're looking for!",
         '',
         '**Seller Guidelines**',
-        '• This thread is only for ISOs. UFS items will be removed.',
-        '• If you have someone\'s ISO, tag them in your listing on ⁠member-shops.',
-        '• Please do not tag each person more than once — you should assume they\'re not interested if they don\'t respond.',
+        "• This thread is only for ISOs. UFS items will be removed.",
+        "• If you have someone's ISO, tag them in your listing on ⁠member-shops.",
+        "• Please do not tag each person more than once — you should assume they're not interested if they don't respond.",
         '• Do not DM anyone without mutual consent first.',
       ].join('\n'),
     };
@@ -529,150 +315,88 @@ async function handleIsoInteraction(d) {
         components: [{
           type: 1,
           components: [
-            { type: 2, style: 1, label: 'Add ISO Item',    custom_id: 'add_iso_item'    },
-            { type: 2, style: 4, label: 'Remove Items',    custom_id: 'remove_iso_item' },
-            { type: 2, style: 2, label: 'Edit Items',      custom_id: 'edit_iso_item'   },
+            { type: 2, style: 1, label: 'Add ISO Item',   custom_id: 'add_iso_item'    },
+            { type: 2, style: 4, label: 'Remove Listing', custom_id: 'remove_iso_item' },
+            { type: 2, style: 2, label: 'Edit Listing',   custom_id: 'edit_iso_item'   },
           ],
         }],
       },
     });
 
-    if (result.id) {
-      return replyEphemeral(id, token, `✅ ISO panel created: <#${result.id}>`);
-    }
+    if (result.id) return replyEphemeral(id, token, `✅ ISO panel created: <#${result.id}>`);
     return replyEphemeral(id, token, '❌ Failed to create ISO panel.');
   }
 
   // ── "Add ISO Item" button ──────────────────────────────────
   if (type === 3 && data.custom_id === 'add_iso_item') {
-    const modal = await buildAddIsoModal();
+    const modal = await buildAddModal();
     return showModal(id, token, modal);
   }
 
-  // ── "Remove Items" button ──────────────────────────────────
-  if (type === 3 && data.custom_id === 'remove_iso_item') {
-    const modal = await buildRemoveIsoModal(userId);
+  // ── "Edit Listing" button ──────────────────────────────────
+  if (type === 3 && data.custom_id === 'edit_iso_item') {
+    const modal = await buildEditModal(userId);
     if (!modal) return replyEphemeral(id, token, "❌ You don't have any active ISO listings.");
     return showModal(id, token, modal);
   }
 
-  // ── "Edit Items" button ────────────────────────────────────
-  if (type === 3 && data.custom_id === 'edit_iso_item') {
-    const modal = await buildEditIsoModal(userId);
+  // ── "Remove Listing" button ────────────────────────────────
+  if (type === 3 && data.custom_id === 'remove_iso_item') {
+    const modal = await buildRemoveModal(userId);
     if (!modal) return replyEphemeral(id, token, "❌ You don't have any active ISO listings.");
     return showModal(id, token, modal);
   }
 
   // ── Modal: Add ISO submitted ───────────────────────────────
   if (type === 5 && data.custom_id === 'mp_iso_submit') {
-    const comps = data.components.flatMap(r => r.components);
-    const get   = (cid) => comps.find(c => c.custom_id === cid);
+    const fields    = getFields(data.components, data.resolved);
+    const comps     = Object.values(fields);
+    const selects   = comps.filter(c => c.type === 3);
+    const texts     = comps.filter(c => c.type === 4);
+    const files     = comps.filter(c => c.type === 19);
 
-    const threadId = get('iso_thread')?.values?.[0];
-    const name     = get('iso_name')?.value?.trim()   || '';
-    const budget   = get('iso_budget')?.value?.trim().replace(/[$,]/g, '') || '';
-    const condition = get('iso_condition')?.values?.[0] || '';
-    const notes    = get('iso_notes')?.value?.trim()  || '';
+    const threadId  = selects[0]?.values?.[0];
+    const content   = texts[0]?.value?.trim() || '';
+    const photoUrls = (files[0]?.files || []).map(f => f.url);
 
-    if (!threadId)              return replyEphemeral(id, token, '❌ Please select an IP category.');
-    if (!name)                  return replyEphemeral(id, token, '❌ Item name is required.');
-    if (isNaN(parseFloat(budget)) || parseFloat(budget) <= 0)
-      return replyEphemeral(id, token, '❌ Budget must be a positive number (e.g. 40.00).');
-    if (!condition)             return replyEphemeral(id, token, '❌ Please select a condition.');
+    if (!threadId) return replyEphemeral(id, token, '❌ Please select an IP category.');
+    if (!content)  return replyEphemeral(id, token, "❌ Please describe what you're looking for.");
 
-    const newItem = {
-      id:        newItemId(),
-      name,
-      budget:    parseFloat(budget).toFixed(2),
-      condition,
-      notes,
-      ts:        new Date().toISOString(),
-    };
-
-    return upsertIsoListing(id, token, userId, username, avatarUrl, threadId, newItem);
+    return upsertIsoListing(id, token, userId, username, avatarUrl, threadId, content, photoUrls);
   }
 
-  // ── Modal: Remove ISO item select ──────────────────────────
+  // ── Modal: Edit ISO submitted ──────────────────────────────
+  if (type === 5 && data.custom_id === 'mp_iso_edit') {
+    const fields   = getFields(data.components, data.resolved);
+    const comps    = Object.values(fields);
+    const selects  = comps.filter(c => c.type === 3);
+    const texts    = comps.filter(c => c.type === 4);
+
+    const threadId = selects[0]?.values?.[0];
+    const content  = texts[0]?.value?.trim() || '';
+
+    if (!threadId) return replyEphemeral(id, token, '❌ Please select a listing.');
+    if (!content)  return replyEphemeral(id, token, "❌ Please describe what you're looking for.");
+
+    return editIsoListing(id, token, userId, username, avatarUrl, threadId, content);
+  }
+
+  // ── Modal: Remove ISO submitted ────────────────────────────
   if (type === 5 && data.custom_id === 'mp_iso_remove') {
-    const comps  = data.components.flatMap(r => r.components);
-    const chosen = comps.find(c => c.custom_id === 'iso_remove_select')?.values?.[0];
-    if (!chosen) return replyEphemeral(id, token, '❌ No item selected.');
+    const fields   = getFields(data.components, data.resolved);
+    const comps    = Object.values(fields);
+    const selects  = comps.filter(c => c.type === 3);
+    const threadId = selects[0]?.values?.[0];
 
-    const [threadId, itemId] = chosen.split('::');
-    return removeIsoItem(id, token, userId, username, avatarUrl, threadId, itemId);
+    if (!threadId) return replyEphemeral(id, token, '❌ Please select a listing.');
+    return removeIsoListing(id, token, userId, username, avatarUrl, threadId);
   }
 
-  // ── Modal: Edit — pick item ────────────────────────────────
-  if (type === 5 && data.custom_id === 'mp_iso_edit_select') {
-    const comps  = data.components.flatMap(r => r.components);
-    const chosen = comps.find(c => c.custom_id === 'iso_edit_select')?.values?.[0];
-    if (!chosen) return replyEphemeral(id, token, '❌ No item selected.');
-
-    const [threadId, itemId] = chosen.split('::');
-    const item = isoListings[userId]?.[threadId]?.items?.find(i => i.id === itemId);
-    if (!item) return replyEphemeral(id, token, '❌ Item not found.');
-
-    return showModal(id, token, buildEditFieldsModal(threadId, item));
-  }
-
-  // ── Modal: Edit — apply fields ─────────────────────────────
-  if (type === 5 && data.custom_id?.startsWith('mp_iso_edit_')) {
-    const key            = data.custom_id.replace('mp_iso_edit_', '');
-    const [threadId, itemId] = key.split('::');
-    const comps          = data.components.flatMap(r => r.components);
-    const get            = (cid) => comps.find(c => c.custom_id === cid);
-
-    const name      = get('iso_edit_name')?.value?.trim()    || '';
-    const budget    = get('iso_edit_budget')?.value?.trim().replace(/[$,]/g, '') || '';
-    const condition = get('iso_edit_condition')?.values?.[0] || '';
-    const notes     = get('iso_edit_notes')?.value?.trim()   || '';
-
-    if (!name) return replyEphemeral(id, token, '❌ Item name is required.');
-    if (isNaN(parseFloat(budget)) || parseFloat(budget) <= 0)
-      return replyEphemeral(id, token, '❌ Budget must be a positive number.');
-
-    return editIsoItem(id, token, userId, username, avatarUrl, threadId, itemId, {
-      name,
-      budget: parseFloat(budget).toFixed(2),
-      condition: condition || undefined,
-      notes,
-    });
-  }
-
-  // ── Bump buttons (from DM) ─────────────────────────────────
-  if (type === 3 && data.custom_id?.startsWith('iso_bump_dismiss_')) {
-    return updateEphemeral(id, token, '👍 No problem — your listing stays as-is.');
-  }
-
-  if (type === 3 && data.custom_id?.startsWith('iso_bump_')) {
-    // custom_id = iso_bump_{userId}_{threadId}
-    const parts    = data.custom_id.split('_');
-    // format: iso_bump_<userId>_<threadId>
-    // userId & threadId are the last two underscore-segments
-    const threadId = parts[parts.length - 1];
-    const bumpUser = parts[parts.length - 2];
-    return bumpListing(id, token, bumpUser, threadId);
-  }
-
-  return false; // Signal: not an ISO interaction
+  return false; // not an ISO interaction
 }
 
-// ── Register ISO slash command ────────────────────────────────
-async function registerIsoCommand(appId) {
-  try {
-    await rest('POST', `/applications/${appId}/commands`, {
-      name:                        'setup_ISO',
-      description:                 'Post the ISO panel',
-      default_member_permissions:  '32',
-    });
-    console.log('ISO slash command registered.');
-  } catch (e) {
-    console.error('ISO command registration failed:', e.message);
-  }
+async function schedulePendingBumps() {
+  // No scheduled bumps — users re-add to bump (72hr cooldown enforced)
 }
 
-module.exports = {
-  handleIsoInteraction,
-  registerIsoCommand,
-  schedulePendingBumps,
-};
+module.exports = { handleIsoInteraction, schedulePendingBumps };
