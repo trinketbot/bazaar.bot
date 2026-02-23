@@ -27,6 +27,4 @@ jobs:
       - name: Run marketplace bot
         env:
           MARKETPLACE_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
-        run: |
-          node index.js 
-          run node iso.js
+        run: index.js 
